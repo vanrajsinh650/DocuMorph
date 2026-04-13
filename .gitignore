@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+poppler/
+poppler.zip
+guj.traineddata
+tesseract_installer.exe
+*_raw_ocr.txt
+*.pdf
