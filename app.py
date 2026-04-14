@@ -346,6 +346,23 @@ if uploaded_file is not None:
                 
                 progress.progress(100)
                 
+                # Build JSON
+                result_json = {
+                    "total_questions": len(questions),
+                    "questions": questions
+                }
+                json_str = json.dumps(result_json, ensure_ascii=False, indent=2)
+                output_filename = f"{Path(uploaded_file.name).stem}_questions.json"
+                
+                # Store results in session_state so they persist across reruns
+                st.session_state["results"] = {
+                    "questions": questions,
+                    "stats": stats,
+                    "json_str": json_str,
+                    "output_filename": output_filename,
+                    "full_log": logger.get_logs(),
+                }
+                
             except Exception as e:
                 print(f"ERROR: {str(e)}")
                 print(traceback.format_exc())
@@ -353,76 +370,8 @@ if uploaded_file is not None:
                 st.error(f"Error: {str(e)}")
                 st.stop()
             finally:
-                # Restore stdout
                 full_log = logger.get_logs()
                 sys.stdout = old_stdout
-            
-            time.sleep(0.3)
-            
-            # ─── RESULTS ────────────────────────────────────────────
-
-            st.markdown('<hr class="divider">', unsafe_allow_html=True)
-            
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                st.markdown(f'<div class="stat-card"><div class="stat-number">{stats["total"]}</div><div class="stat-label">Questions</div></div>', unsafe_allow_html=True)
-            with c2:
-                st.markdown(f'<div class="stat-card"><div class="stat-number">{stats["with_4_options"]}</div><div class="stat-label">Complete</div></div>', unsafe_allow_html=True)
-            with c3:
-                st.markdown(f'<div class="stat-card"><div class="stat-number">{stats["with_exam_ref"]}</div><div class="stat-label">With Ref</div></div>', unsafe_allow_html=True)
-            with c4:
-                st.markdown(f'<div class="stat-card"><div class="stat-number">{stats["pages"]}</div><div class="stat-label">Pages</div></div>', unsafe_allow_html=True)
-            
-            st.markdown("", unsafe_allow_html=True)
-            
-            # JSON output
-            result_json = {
-                "total_questions": len(questions),
-                "questions": questions
-            }
-            json_str = json.dumps(result_json, ensure_ascii=False, indent=2)
-            output_filename = f"{Path(uploaded_file.name).stem}_questions.json"
-            
-            st.download_button(
-                label=f"Download JSON ({len(questions)} questions)",
-                data=json_str.encode('utf-8'),
-                file_name=output_filename,
-                mime="application/json",
-            )
-            
-            # Preview tabs
-            tab1, tab2, tab3 = st.tabs(["Preview", "Raw JSON", "Full Log"])
-            
-            with tab1:
-                show_count = min(5, len(questions))
-                for q in questions[:show_count]:
-                    options_html = ""
-                    for key, val in q.get("options", {}).items():
-                        options_html += f'<div class="q-option">({key}) {val}</div>'
-                    ref_html = ""
-                    if "exam_reference" in q:
-                        ref_html = f'<div class="q-ref">{q["exam_reference"]}</div>'
-                    
-                    st.markdown(f"""
-                    <div class="q-card">
-                        <div class="q-number">Q{q['question_number']} · Page {q['page_number']}</div>
-                        <div class="q-text">{q['question_text'][:200]}{'...' if len(q['question_text']) > 200 else ''}</div>
-                        {options_html}
-                        {ref_html}
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                if len(questions) > show_count:
-                    st.markdown(f'<div style="color: #444; font-size: 0.8rem; text-align: center;">+ {len(questions) - show_count} more in download</div>', unsafe_allow_html=True)
-            
-            with tab2:
-                preview_json = json_str[:3000]
-                if len(json_str) > 3000:
-                    preview_json += "\n\n... (truncated)"
-                st.code(preview_json, language="json")
-            
-            with tab3:
-                st.code(full_log, language="text")
         
         finally:
             try:
@@ -430,10 +379,83 @@ if uploaded_file is not None:
             except Exception:
                 pass
 
-else:
+# ─── SHOW RESULTS (persisted in session_state) ──────────────────────────────
+
+if "results" in st.session_state:
+    r = st.session_state["results"]
+    questions = r["questions"]
+    stats = r["stats"]
+    json_str = r["json_str"]
+    output_filename = r["output_filename"]
+    full_log = r["full_log"]
+    
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
+    
+    # Stats row
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f'<div class="stat-card"><div class="stat-number">{stats["total"]}</div><div class="stat-label">Questions</div></div>', unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'<div class="stat-card"><div class="stat-number">{stats["with_4_options"]}</div><div class="stat-label">Complete</div></div>', unsafe_allow_html=True)
+    with c3:
+        st.markdown(f'<div class="stat-card"><div class="stat-number">{stats["with_exam_ref"]}</div><div class="stat-label">With Ref</div></div>', unsafe_allow_html=True)
+    with c4:
+        st.markdown(f'<div class="stat-card"><div class="stat-number">{stats["pages"]}</div><div class="stat-label">Pages</div></div>', unsafe_allow_html=True)
+    
+    st.markdown("", unsafe_allow_html=True)
+    
+    # Download button
+    st.download_button(
+        label=f"Download JSON ({len(questions)} questions)",
+        data=json_str.encode('utf-8'),
+        file_name=output_filename,
+        mime="application/json",
+    )
+    
+    # Preview tabs
+    tab1, tab2, tab3 = st.tabs(["Preview", "Raw JSON", "Full Log"])
+    
+    with tab1:
+        show_count = min(5, len(questions))
+        for q in questions[:show_count]:
+            options_html = ""
+            for key, val in q.get("options", {}).items():
+                options_html += f'<div class="q-option">({key}) {val}</div>'
+            ref_html = ""
+            if "exam_reference" in q:
+                ref_html = f'<div class="q-ref">{q["exam_reference"]}</div>'
+            
+            st.markdown(f"""
+            <div class="q-card">
+                <div class="q-number">Q{q['question_number']} · Page {q['page_number']}</div>
+                <div class="q-text">{q['question_text'][:200]}{'...' if len(q['question_text']) > 200 else ''}</div>
+                {options_html}
+                {ref_html}
+            </div>
+            """, unsafe_allow_html=True)
+        
+        if len(questions) > show_count:
+            st.markdown(f'<div style="color: #444; font-size: 0.8rem; text-align: center;">+ {len(questions) - show_count} more in download</div>', unsafe_allow_html=True)
+    
+    with tab2:
+        preview_json = json_str[:5000]
+        if len(json_str) > 5000:
+            preview_json += "\n\n... (truncated, download for full output)"
+        st.code(preview_json, language="json")
+    
+    with tab3:
+        st.code(full_log, language="text")
+    
+    # Clear results button
+    if st.button("Clear Results"):
+        del st.session_state["results"]
+        st.rerun()
+
+elif uploaded_file is None:
     st.markdown("""
     <div style="text-align: center; padding: 3rem 1rem; color: #333333;">
         <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">📄</div>
         <div style="font-size: 0.9rem;">Upload a scanned Gujarati PDF to begin</div>
     </div>
     """, unsafe_allow_html=True)
+
