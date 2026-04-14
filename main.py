@@ -31,7 +31,7 @@ else:
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # OpenRouter API config
-OPENROUTER_MODEL = "qwen/qwen-2.5-vl-7b-instruct"  # Fast, cheap, great OCR (10x cheaper than 72B)
+OPENROUTER_MODEL = "google/gemma-3-27b-it:free"  # FREE forever, no credits needed, good OCR
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # The prompt that instructs the vision model to extract text accurately
@@ -310,14 +310,15 @@ class OpenRouterClient:
         sys.exit(1)
 
 
-def ocr_page_openrouter(client: OpenRouterClient, page_image: Image.Image, page_number: int, retry_count: int = 3) -> dict:
+def ocr_page_openrouter(client: OpenRouterClient, page_image: Image.Image, page_number: int) -> dict:
     """
     Use OpenRouter Vision API to extract text from a page image.
-    No rate limit issues — OpenRouter scales automatically.
+    Handles rate limits (429) with backoff for free models.
     """
     img_b64 = image_to_base64(page_image)
 
-    for attempt in range(retry_count):
+    max_attempts = 6  # More attempts for rate-limited free models
+    for attempt in range(max_attempts):
         try:
             response = client.client.chat.completions.create(
                 model=OPENROUTER_MODEL,
@@ -350,7 +351,7 @@ def ocr_page_openrouter(client: OpenRouterClient, page_image: Image.Image, page_
             if content is None:
                 finish_reason = getattr(response.choices[0], "finish_reason", "unknown")
                 raise Exception(f"API returned no content (blocked/filtered). Finish reason: {finish_reason}")
-            
+
             text = content.strip()
             return {
                 "page_number": page_number,
@@ -359,19 +360,34 @@ def ocr_page_openrouter(client: OpenRouterClient, page_image: Image.Image, page_
 
         except Exception as e:
             error_msg = str(e)
+
             if "402" in error_msg or "Payment Required" in error_msg:
                 print(f"   ❌ ERROR 402: Insufficient OpenRouter credits!")
                 print(f"   Add credits at https://openrouter.ai/credits")
                 raise RuntimeError(f"OpenRouter 402: No credits left. Add funds at https://openrouter.ai/credits")
+
+            elif "429" in error_msg or "rate" in error_msg.lower():
+                # Rate limited (common with free models) — wait and retry
+                wait = min(5 * (attempt + 1), 30)  # 5s, 10s, 15s, 20s, 25s, 30s
+                print(f"   ⏳ Rate limited (attempt {attempt + 1}/{max_attempts}). Waiting {wait}s...")
+                time.sleep(wait)
+
             elif "413" in error_msg or "too large" in error_msg.lower():
                 print(f"   Image too large, reducing size...")
                 img_b64 = image_to_base64(page_image, max_size=2500)
                 time.sleep(1)
-            elif attempt < retry_count - 1:
+
+            elif "onnection" in error_msg:
+                # Connection error — brief wait and retry
+                wait = 3 * (attempt + 1)
+                print(f"   Connection error (attempt {attempt + 1}). Waiting {wait}s...")
+                time.sleep(wait)
+
+            elif attempt < max_attempts - 1:
                 print(f"   Error (page {page_number}, attempt {attempt + 1}): {error_msg[:120]}. Retrying...")
-                time.sleep(1)
+                time.sleep(2)
             else:
-                print(f"   Failed on page {page_number} after {retry_count} attempts: {error_msg[:150]}")
+                print(f"   Failed on page {page_number} after {max_attempts} attempts: {error_msg[:150]}")
                 return {
                     "page_number": page_number,
                     "text": ""
@@ -435,9 +451,13 @@ def extract_text_openrouter(pdf_path: str, start_page: int = None, end_page: int
         del img
         gc.collect()
 
-        # Small delay between requests
+        # Cooldown between requests — free models need longer gaps to avoid 429s
         if i < total - 1:
-            time.sleep(0.2)
+            if ":free" in OPENROUTER_MODEL:
+                print(f"   [Free model cooldown 10s...]")
+                time.sleep(10)
+            else:
+                time.sleep(0.2)
             
         # Periodic save (checkpoint) every 10 pages in case of crash/memory issue
         if len(pages_text) % 10 == 0:
