@@ -11,6 +11,7 @@ import re
 import json
 import os
 import time
+import platform
 import argparse
 from pathlib import Path
 from io import BytesIO
@@ -18,9 +19,14 @@ from io import BytesIO
 from pdf2image import convert_from_path
 from PIL import Image, ImageFilter, ImageEnhance
 
-#CONFIGURATION 
-TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-POPPLER_PATH = r"C:\Users\Vanrajsinh\Desktop\DevVault\Building-Hub\DocuMorph\poppler\poppler-24.08.0\Library\bin"
+# CONFIGURATION (auto-detect platform)
+if platform.system() == "Windows":
+    TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    POPPLER_PATH = r"C:\Users\Vanrajsinh\Desktop\DevVault\Building-Hub\DocuMorph\poppler\poppler-24.08.0\Library\bin"
+else:
+    # Linux (Streamlit Cloud) — poppler and tesseract are system packages
+    TESSERACT_PATH = "tesseract"
+    POPPLER_PATH = None  # pdf2image finds it automatically on Linux
 
 # Groq API config
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
@@ -248,10 +254,11 @@ def extract_text_groq(pdf_path: str, start_page: int = None, end_page: int = Non
     kwargs = {
         "pdf_path": pdf_path,
         "dpi": 300,
-        "poppler_path": POPPLER_PATH,
         "fmt": "jpeg",
         "thread_count": 4,
     }
+    if POPPLER_PATH:
+        kwargs["poppler_path"] = POPPLER_PATH
     
     if start_page is not None:
         kwargs["first_page"] = start_page
@@ -370,10 +377,11 @@ def extract_text_tesseract(pdf_path: str, start_page: int = None, end_page: int 
     kwargs = {
         "pdf_path": pdf_path,
         "dpi": 300,
-        "poppler_path": POPPLER_PATH,
         "fmt": "jpeg",
         "thread_count": 4,
     }
+    if POPPLER_PATH:
+        kwargs["poppler_path"] = POPPLER_PATH
     
     if start_page is not None:
         kwargs["first_page"] = start_page
@@ -606,7 +614,7 @@ def save_json(questions: list[dict], output_path: str):
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
     
-    print(f"\Saved {len(questions)} questions to: {output_path}")
+    print(f"Saved {len(questions)} questions to: {output_path}")
 
 
 def save_raw_text(pages_text: list[dict], output_path: str):
