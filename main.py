@@ -76,11 +76,20 @@ class GroqKeyPool:
         print(f"Loaded {self.total_keys} Groq API key(s)")
     
     def _load_keys(self) -> list[str]:
-        """Load all Groq API keys from environment or .env file."""
+        """Load all Groq API keys from Streamlit secrets, environment, or .env file."""
         keys = []
         env_vars = {}
         
-        # Load from .env file first
+        # 1. Check Streamlit secrets first (for Streamlit Cloud deployment)
+        try:
+            import streamlit as st
+            for k, v in st.secrets.items():
+                if k.startswith("GROQ_API_KEY") and v:
+                    env_vars[k] = str(v)
+        except Exception:
+            pass  # Not running in Streamlit, skip
+        
+        # 2. Load from .env file (for local development)
         env_path = Path(__file__).parent / ".env"
         if env_path.exists():
             with open(env_path, 'r') as f:
@@ -88,11 +97,14 @@ class GroqKeyPool:
                     line = line.strip()
                     if line and not line.startswith('#') and '=' in line:
                         k, v = line.split('=', 1)
-                        env_vars[k.strip()] = v.strip().strip('"').strip("'")
+                        key_name = k.strip()
+                        key_val = v.strip().strip('"').strip("'")
+                        if key_name not in env_vars:  # Don't override st.secrets
+                            env_vars[key_name] = key_val
         
-        # Also check actual environment variables
+        # 3. Check actual environment variables
         for k, v in os.environ.items():
-            if k.startswith("GROQ_API_KEY"):
+            if k.startswith("GROQ_API_KEY") and k not in env_vars:
                 env_vars[k] = v
         
         # Collect numbered keys: GROQ_API_KEY_1, GROQ_API_KEY_2, ...
