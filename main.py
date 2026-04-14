@@ -254,52 +254,99 @@ def ocr_page_groq(key_pool: GroqKeyPool, page_image: Image.Image, page_number: i
     return {"page_number": page_number, "text": ""}
 
 
-def extract_text_groq(pdf_path: str, start_page: int = None, end_page: int = None) -> list[dict]:
-    """
-    Extract text from PDF pages using Groq Vision API.
-    Uses multiple API keys with round-robin rotation for higher throughput.
-    """
-    key_pool = GroqKeyPool()
-    
-    print(f"\nConverting PDF pages to images...")
-    
+def _get_page_count(pdf_path: str) -> int:
+    """Get total page count of a PDF without loading all pages."""
+    try:
+        import pdfplumber
+        with pdfplumber.open(pdf_path) as pdf:
+            return len(pdf.pages)
+    except Exception:
+        # Fallback: convert first page just to check
+        return 0
+
+
+def _convert_single_page(pdf_path: str, page_num: int, dpi: int = 200) -> Image.Image:
+    """Convert a single PDF page to an image. Memory-efficient."""
     kwargs = {
         "pdf_path": pdf_path,
-        "dpi": 300,
+        "dpi": dpi,
         "fmt": "jpeg",
-        "thread_count": 4,
+        "first_page": page_num,
+        "last_page": page_num,
+        "thread_count": 1,
     }
     if POPPLER_PATH:
         kwargs["poppler_path"] = POPPLER_PATH
     
-    if start_page is not None:
-        kwargs["first_page"] = start_page
-    if end_page is not None:
-        kwargs["last_page"] = end_page
-    
     images = convert_from_path(**kwargs)
+    if images:
+        return images[0]
+    return None
+
+
+def extract_text_groq(pdf_path: str, start_page: int = None, end_page: int = None) -> list[dict]:
+    """
+    Extract text from PDF pages using Groq Vision API.
+    Processes pages ONE AT A TIME to avoid memory issues.
+    Uses multiple API keys with round-robin rotation.
+    """
+    key_pool = GroqKeyPool()
     
-    actual_start = start_page or 1
-    total = len(images)
-    print(f"Converted {total} pages to images")
+    # Determine page range
+    if start_page and end_page:
+        first_page = start_page
+        last_page = end_page
+    else:
+        total_pages = _get_page_count(pdf_path)
+        first_page = start_page or 1
+        last_page = end_page or total_pages
+        if last_page == 0:
+            # Fallback: try converting and see
+            print("Could not detect page count, trying page 1...")
+            last_page = first_page
     
-    print(f"\nRunning Groq Vision OCR (Llama 4 Scout) with {key_pool.total_keys} API key(s)...")
+    total = last_page - first_page + 1
+    print(f"Pages to process: {first_page} to {last_page} ({total} pages)")
+    print(f"OCR Engine: Groq Vision (Llama 4 Scout)")
+    print(f"API Keys loaded: {key_pool.total_keys}")
+    print(f"---")
+    
     pages_text = []
     
-    for i, img in enumerate(images):
-        page_num = actual_start + i
-        print(f"Processing page {page_num} ({i + 1}/{total})...", end=" ")
+    for page_num in range(first_page, last_page + 1):
+        i = page_num - first_page
+        print(f"[Page {page_num}] Converting to image (DPI=200)...")
+        
+        try:
+            img = _convert_single_page(pdf_path, page_num, dpi=200)
+        except Exception as e:
+            print(f"[Page {page_num}] ERROR converting: {str(e)[:150]}")
+            pages_text.append({"page_number": page_num, "text": ""})
+            continue
+        
+        if img is None:
+            print(f"[Page {page_num}] WARNING: No image returned, skipping.")
+            pages_text.append({"page_number": page_num, "text": ""})
+            continue
+        
+        w, h = img.size
+        print(f"[Page {page_num}] Image: {w}x{h}px. Sending to Groq...")
         
         result = ocr_page_groq(key_pool, img, page_num)
         pages_text.append(result)
         
         text_len = len(result["text"])
-        print(f"({text_len} chars)")
+        print(f"[Page {page_num}] Done. Extracted {text_len} chars. ({i + 1}/{total})")
         
-        # Small delay between requests to be respectful
+        # Free memory
+        del img
+        
+        # Small delay between requests
         if i < total - 1:
             time.sleep(1)
     
+    print(f"---")
+    print(f"OCR complete. Processed {len(pages_text)} pages.")
     return pages_text
 
 
@@ -382,41 +429,54 @@ def ocr_page_two_columns(page_image: Image.Image, page_number: int) -> dict:
 def extract_text_tesseract(pdf_path: str, start_page: int = None, end_page: int = None) -> list[dict]:
     """
     Convert PDF pages to images and run Tesseract OCR on each.
-    Uses two-column splitting for proper reading order.
+    Processes pages ONE AT A TIME. Uses two-column splitting.
     """
-    print(f"Converting PDF pages to images...")
+    # Determine page range
+    if start_page and end_page:
+        first_page = start_page
+        last_page = end_page
+    else:
+        total_pages = _get_page_count(pdf_path)
+        first_page = start_page or 1
+        last_page = end_page or total_pages
+        if last_page == 0:
+            last_page = first_page
     
-    kwargs = {
-        "pdf_path": pdf_path,
-        "dpi": 300,
-        "fmt": "jpeg",
-        "thread_count": 4,
-    }
-    if POPPLER_PATH:
-        kwargs["poppler_path"] = POPPLER_PATH
+    total = last_page - first_page + 1
+    print(f"Pages to process: {first_page} to {last_page} ({total} pages)")
+    print(f"OCR Engine: Tesseract (Gujarati + English)")
+    print(f"---")
     
-    if start_page is not None:
-        kwargs["first_page"] = start_page
-    if end_page is not None:
-        kwargs["last_page"] = end_page
-    
-    images = convert_from_path(**kwargs)
-    
-    actual_start = start_page or 1
-    total = len(images)
-    print(f"Converted {total} pages to images")
-    
-    print(f"\nRunning Tesseract OCR (Gujarati + English) with 2-column split...")
     pages_text = []
     
-    for i, img in enumerate(images):
-        page_num = actual_start + i
+    for page_num in range(first_page, last_page + 1):
+        i = page_num - first_page
+        print(f"[Page {page_num}] Converting to image (DPI=300)...")
+        
+        try:
+            img = _convert_single_page(pdf_path, page_num, dpi=300)
+        except Exception as e:
+            print(f"[Page {page_num}] ERROR converting: {str(e)[:150]}")
+            pages_text.append({"page_number": page_num, "text": ""})
+            continue
+        
+        if img is None:
+            print(f"[Page {page_num}] WARNING: No image returned, skipping.")
+            pages_text.append({"page_number": page_num, "text": ""})
+            continue
+        
+        print(f"[Page {page_num}] Running Tesseract 2-column OCR...")
         result = ocr_page_two_columns(img, page_num)
         pages_text.append(result)
         
-        if (i + 1) % 10 == 0 or (i + 1) == total:
-            print(f"   OCR completed: {i + 1}/{total} pages")
+        text_len = len(result["text"])
+        print(f"[Page {page_num}] Done. Extracted {text_len} chars. ({i + 1}/{total})")
+        
+        # Free memory
+        del img
     
+    print(f"---")
+    print(f"OCR complete. Processed {len(pages_text)} pages.")
     return pages_text
 
 
