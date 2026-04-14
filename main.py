@@ -1,42 +1,10 @@
-"""
-DocuMorph - Gujarati PDF Question Extractor
-=============================================
-Extracts MCQ questions from scanned Gujarati PDF into structured JSON.
-
-Supports two OCR engines:
-  1. Groq Vision API (primary) - Uses Llama 4 Scout for high-accuracy Gujarati OCR
-  2. Tesseract OCR (fallback) - Local OCR, lower accuracy for Gujarati
-
-Usage:
-    python main.py <pdf_path> [--output output.json] [--pages 1-10] [--engine groq|tesseract]
-
-Output JSON format:
-    {
-        "total_questions": 5500,
-        "questions": [
-            {
-                "id": 1,
-                "question_number": "001",
-                "question_text": "...",
-                "options": {
-                    "A": "...",
-                    "B": "...",
-                    "C": "...",
-                    "D": "..."
-                },
-                "exam_reference": "PI 38/2017-18",
-                "page_number": 1
-            }
-        ]
-    }
-"""
-
 import sys
 import io
 
-# Fix Windows console encoding for Gujarati/Unicode output
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+# Fix Windows console encoding for Gujarati/Unicode output (only when running directly)
+if __name__ == "__main__":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 import base64
 import re
@@ -50,7 +18,7 @@ from io import BytesIO
 from pdf2image import convert_from_path
 from PIL import Image, ImageFilter, ImageEnhance
 
-# ─── CONFIGURATION ──────────────────────────────────────────────────────────
+#CONFIGURATION 
 TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 POPPLER_PATH = r"C:\Users\Vanrajsinh\Desktop\DevVault\Building-Hub\DocuMorph\poppler\poppler-24.08.0\Library\bin"
 
@@ -74,38 +42,115 @@ CRITICAL RULES:
 Output the raw text only, maintaining the original line structure as much as possible."""
 
 
-# ─── GROQ VISION OCR ────────────────────────────────────────────────────────
+# GROQ VISION OCR (Multi-Key Rotation)
 
-def get_groq_client():
-    """Initialize and return Groq client."""
-    try:
-        from groq import Groq
-    except ImportError:
-        print("❌ Error: 'groq' package not installed. Run: pip install groq")
-        sys.exit(1)
+class GroqKeyPool:
+    """
+    Manages multiple Groq API keys with round-robin rotation and auto-fallback.
+    When one key hits rate limits, automatically switches to the next key.
     
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        # Try loading from .env file in project directory
+    Supports keys in .env as:
+        GROQ_API_KEY_1=key1
+        GROQ_API_KEY_2=key2
+        GROQ_API_KEY_3=key3
+    Or a single key:
+        GROQ_API_KEY=key
+    """
+
+    def __init__(self):
+        from groq import Groq
+        self._Groq = Groq
+        self.keys = self._load_keys()
+        self.clients = [Groq(api_key=k) for k in self.keys]
+        self.current_index = 0
+        self.total_keys = len(self.keys)
+        # Track which keys are temporarily exhausted (rate limited)
+        self.exhausted_until = [0.0] * self.total_keys
+        
+        print(f"Loaded {self.total_keys} Groq API key(s)")
+    
+    def _load_keys(self) -> list[str]:
+        """Load all Groq API keys from environment or .env file."""
+        keys = []
+        env_vars = {}
+        
+        # Load from .env file first
         env_path = Path(__file__).parent / ".env"
         if env_path.exists():
             with open(env_path, 'r') as f:
                 for line in f:
                     line = line.strip()
-                    if line.startswith("GROQ_API_KEY="):
-                        api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
-                        break
+                    if line and not line.startswith('#') and '=' in line:
+                        k, v = line.split('=', 1)
+                        env_vars[k.strip()] = v.strip().strip('"').strip("'")
+        
+        # Also check actual environment variables
+        for k, v in os.environ.items():
+            if k.startswith("GROQ_API_KEY"):
+                env_vars[k] = v
+        
+        # Collect numbered keys: GROQ_API_KEY_1, GROQ_API_KEY_2, ...
+        numbered_keys = {}
+        for k, v in env_vars.items():
+            if k.startswith("GROQ_API_KEY_") and v and v != "your_groq_api_key_here":
+                try:
+                    num = int(k.split("_")[-1])
+                    numbered_keys[num] = v
+                except ValueError:
+                    pass
+        
+        # Add numbered keys in order
+        for num in sorted(numbered_keys.keys()):
+            keys.append(numbered_keys[num])
+        
+        # If no numbered keys, try the single GROQ_API_KEY
+        if not keys:
+            single_key = env_vars.get("GROQ_API_KEY", "")
+            if single_key and single_key != "your_groq_api_key_here":
+                keys.append(single_key)
+        
+        if not keys:
+            print("Error: No Groq API keys found.")
+            print("Add keys to .env file:")
+            print("GROQ_API_KEY_1=your_first_key")
+            print("GROQ_API_KEY_2=your_second_key")
+            print("GROQ_API_KEY_3=your_third_key")
+            print("Get free keys at: https://console.groq.com/")
+            sys.exit(1)
+        
+        return keys
     
-    if not api_key:
-        print("❌ Error: GROQ_API_KEY not found.")
-        print("   Set it as an environment variable:")
-        print("     set GROQ_API_KEY=your_key_here")
-        print("   Or create a .env file in the project directory with:")
-        print("     GROQ_API_KEY=your_key_here")
-        print("   Get a free key at: https://console.groq.com/")
-        sys.exit(1)
+    def get_client(self):
+        """Get the current active Groq client (round-robin with fallback)."""
+        now = time.time()
+        
+        # Try to find a non-exhausted key
+        for _ in range(self.total_keys):
+            if now >= self.exhausted_until[self.current_index]:
+                return self.clients[self.current_index], self.current_index
+            # This key is still rate-limited, try next
+            self.current_index = (self.current_index + 1) % self.total_keys
+        
+        # All keys exhausted — wait for the one that recovers soonest
+        soonest = min(self.exhausted_until)
+        wait_time = max(0, soonest - now)
+        if wait_time > 0:
+            print(f"   ⏳ All {self.total_keys} keys rate-limited. Waiting {wait_time:.0f}s...")
+            time.sleep(wait_time + 1)
+        
+        return self.clients[self.current_index], self.current_index
     
-    return Groq(api_key=api_key)
+    def mark_rate_limited(self, key_index: int, cooldown: int = 60):
+        """Mark a key as rate-limited for a cooldown period."""
+        self.exhausted_until[key_index] = time.time() + cooldown
+        key_num = key_index + 1
+        print(f"Key #{key_num} rate-limited, cooling down {cooldown}s. Switching to next key...")
+        # Rotate to next key
+        self.current_index = (key_index + 1) % self.total_keys
+    
+    def advance(self):
+        """Move to the next key in round-robin (call after each successful request)."""
+        self.current_index = (self.current_index + 1) % self.total_keys
 
 
 def image_to_base64(image: Image.Image, max_size: int = 3800) -> str:
@@ -122,14 +167,19 @@ def image_to_base64(image: Image.Image, max_size: int = 3800) -> str:
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def ocr_page_groq(client, page_image: Image.Image, page_number: int, retry_count: int = 3) -> dict:
+def ocr_page_groq(key_pool: GroqKeyPool, page_image: Image.Image, page_number: int, retry_count: int = 3) -> dict:
     """
     Use Groq Vision API to extract text from a page image.
-    Sends the full page image (the model handles layout understanding).
+    Uses the key pool for automatic rotation and fallback between multiple API keys.
     """
     img_b64 = image_to_base64(page_image)
     
-    for attempt in range(retry_count):
+    total_attempts = retry_count * key_pool.total_keys  # More attempts across all keys
+    
+    for attempt in range(total_attempts):
+        client, key_idx = key_pool.get_client()
+        key_num = key_idx + 1
+        
         try:
             response = client.chat.completions.create(
                 model=GROQ_MODEL,
@@ -155,6 +205,8 @@ def ocr_page_groq(client, page_image: Image.Image, page_number: int, retry_count
             )
             
             text = response.choices[0].message.content.strip()
+            # Success — rotate to next key for next request (distribute load)
+            key_pool.advance()
             return {
                 "page_number": page_number,
                 "text": text
@@ -163,20 +215,19 @@ def ocr_page_groq(client, page_image: Image.Image, page_number: int, retry_count
         except Exception as e:
             error_msg = str(e)
             if "429" in error_msg or "rate_limit" in error_msg.lower():
-                wait_time = 15 * (attempt + 1)
-                print(f"   ⏳ Rate limited. Waiting {wait_time}s before retry ({attempt + 1}/{retry_count})...")
-                time.sleep(wait_time)
+                # Rate limited — mark this key and auto-switch to next
+                key_pool.mark_rate_limited(key_idx, cooldown=60)
+                time.sleep(1)  # Brief pause before trying next key
             elif "413" in error_msg or "too large" in error_msg.lower():
-                # Image too large, try with smaller size
-                print(f"   📐 Image too large, reducing size...")
+                print(f"Image too large, reducing size...")
                 img_b64 = image_to_base64(page_image, max_size=2500)
                 time.sleep(2)
             else:
-                if attempt < retry_count - 1:
-                    print(f"   ⚠️ Error on page {page_number}: {error_msg[:100]}. Retrying...")
-                    time.sleep(5)
+                if attempt < total_attempts - 1:
+                    print(f"Error (key #{key_num}, page {page_number}): {error_msg[:100]}. Retrying...")
+                    time.sleep(3)
                 else:
-                    print(f"   ❌ Failed on page {page_number} after {retry_count} attempts: {error_msg[:150]}")
+                    print(f"Failed on page {page_number} after {total_attempts} attempts: {error_msg[:150]}")
                     return {
                         "page_number": page_number,
                         "text": ""
@@ -188,11 +239,11 @@ def ocr_page_groq(client, page_image: Image.Image, page_number: int, retry_count
 def extract_text_groq(pdf_path: str, start_page: int = None, end_page: int = None) -> list[dict]:
     """
     Extract text from PDF pages using Groq Vision API.
-    Converts pages to images and sends each to the Groq vision model.
+    Uses multiple API keys with round-robin rotation for higher throughput.
     """
-    client = get_groq_client()
+    key_pool = GroqKeyPool()
     
-    print(f"\n📖 Converting PDF pages to images...")
+    print(f"\nConverting PDF pages to images...")
     
     kwargs = {
         "pdf_path": pdf_path,
@@ -211,29 +262,29 @@ def extract_text_groq(pdf_path: str, start_page: int = None, end_page: int = Non
     
     actual_start = start_page or 1
     total = len(images)
-    print(f"   Converted {total} pages to images")
+    print(f"Converted {total} pages to images")
     
-    print(f"\n🔍 Running Groq Vision OCR (Llama 4 Scout)...")
+    print(f"\nRunning Groq Vision OCR (Llama 4 Scout) with {key_pool.total_keys} API key(s)...")
     pages_text = []
     
     for i, img in enumerate(images):
         page_num = actual_start + i
-        print(f"   Processing page {page_num} ({i + 1}/{total})...", end=" ")
+        print(f"Processing page {page_num} ({i + 1}/{total})...", end=" ")
         
-        result = ocr_page_groq(client, img, page_num)
+        result = ocr_page_groq(key_pool, img, page_num)
         pages_text.append(result)
         
         text_len = len(result["text"])
-        print(f"✅ ({text_len} chars)")
+        print(f"({text_len} chars)")
         
-        # Small delay between requests to avoid rate limits
+        # Small delay between requests to be respectful
         if i < total - 1:
-            time.sleep(2)
+            time.sleep(1)
     
     return pages_text
 
 
-# ─── TESSERACT OCR (FALLBACK) ───────────────────────────────────────────────
+# TESSERACT OCR (FALLBACK) 
 
 def preprocess_image(image: Image.Image) -> Image.Image:
     """
@@ -314,7 +365,7 @@ def extract_text_tesseract(pdf_path: str, start_page: int = None, end_page: int 
     Convert PDF pages to images and run Tesseract OCR on each.
     Uses two-column splitting for proper reading order.
     """
-    print(f"\n📖 Converting PDF pages to images...")
+    print(f"Converting PDF pages to images...")
     
     kwargs = {
         "pdf_path": pdf_path,
@@ -333,9 +384,9 @@ def extract_text_tesseract(pdf_path: str, start_page: int = None, end_page: int 
     
     actual_start = start_page or 1
     total = len(images)
-    print(f"   Converted {total} pages to images")
+    print(f"Converted {total} pages to images")
     
-    print(f"\n🔍 Running Tesseract OCR (Gujarati + English) with 2-column split...")
+    print(f"\nRunning Tesseract OCR (Gujarati + English) with 2-column split...")
     pages_text = []
     
     for i, img in enumerate(images):
@@ -349,7 +400,7 @@ def extract_text_tesseract(pdf_path: str, start_page: int = None, end_page: int 
     return pages_text
 
 
-# ─── QUESTION PARSING ────────────────────────────────────────────────────────
+# QUESTION PARSING 
 
 def parse_questions(pages_text: list[dict]) -> list[dict]:
     """
@@ -378,7 +429,7 @@ def parse_questions(pages_text: list[dict]) -> list[dict]:
     )
     
     matches = list(question_pattern.finditer(full_text))
-    print(f"\n🔍 Found {len(matches)} question blocks")
+    print(f"\nFound {len(matches)} question blocks")
     
     questions = []
     
@@ -543,7 +594,7 @@ def clean_text(text: str) -> str:
     return text
 
 
-# ─── OUTPUT & VALIDATION ────────────────────────────────────────────────────
+# OUTPUT & VALIDATION
 
 def save_json(questions: list[dict], output_path: str):
     """Save questions to a JSON file with UTF-8 encoding."""
@@ -555,7 +606,7 @@ def save_json(questions: list[dict], output_path: str):
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
     
-    print(f"\n✅ Saved {len(questions)} questions to: {output_path}")
+    print(f"\Saved {len(questions)} questions to: {output_path}")
 
 
 def save_raw_text(pages_text: list[dict], output_path: str):
@@ -573,18 +624,18 @@ def save_raw_text(pages_text: list[dict], output_path: str):
 def print_sample(questions: list[dict], count: int = 3):
     """Print sample questions for verification."""
     print(f"\n{'='*60}")
-    print(f"📋 SAMPLE OUTPUT (first {min(count, len(questions))} questions)")
+    print(f"SAMPLE OUTPUT (first {min(count, len(questions))} questions)")
     print(f"{'='*60}")
     
     for q in questions[:count]:
-        print(f"\n📌 Question #{q['question_number']}")
-        print(f"   Text: {q['question_text'][:120]}")
+        print(f"\nQuestion #{q['question_number']}")
+        print(f"Text: {q['question_text'][:120]}")
         if q['options']:
             for key, val in q['options'].items():
                 print(f"   ({key}) {val}")
         if 'exam_reference' in q:
-            print(f"   📎 Exam: {q['exam_reference']}")
-        print(f"   📄 Page: {q['page_number']}")
+            print(f"Exam: {q['exam_reference']}")
+        print(f"Page: {q['page_number']}")
 
 
 def validate_questions(questions: list[dict]) -> dict:
@@ -620,21 +671,18 @@ def validate_questions(questions: list[dict]) -> dict:
             stats["missing_question_text"] += 1
     
     print(f"\n{'='*60}")
-    print(f"📊 VALIDATION REPORT")
+    print(f"VALIDATION REPORT")
     print(f"{'='*60}")
-    print(f"   Total questions extracted: {stats['total']}")
-    print(f"   ✅ With all 4 options:     {stats['with_all_4_options']}")
-    print(f"   ⚠️  With 3 options:         {stats['with_3_options']}")
-    print(f"   ⚠️  With 2 options:         {stats['with_2_options']}")
-    print(f"   ❌ With 1 option:          {stats['with_1_option']}")
-    print(f"   ❌ With 0 options:          {stats['with_0_options']}")
-    print(f"   📎 With exam reference:    {stats['with_exam_ref']}")
-    print(f"   ❗ Missing question text:  {stats['missing_question_text']}")
+    print(f"Total questions extracted: {stats['total']}")
+    print(f"With all 4 options:     {stats['with_all_4_options']}")
+    print(f"With 3 options:         {stats['with_3_options']}")
+    print(f"With 2 options:         {stats['with_2_options']}")
+    print(f"With 1 option:          {stats['with_1_option']}")
+    print(f"With 0 options:          {stats['with_0_options']}")
+    print(f"With exam reference:    {stats['with_exam_ref']}")
+    print(f"Missing question text:  {stats['missing_question_text']}")
     
     return stats
-
-
-# ─── MAIN ────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
@@ -677,7 +725,7 @@ def main():
     pdf_path = Path(args.pdf_path)
     
     if not pdf_path.exists():
-        print(f"❌ Error: PDF file not found: {pdf_path}")
+        print(f"Error: PDF file not found: {pdf_path}")
         sys.exit(1)
     
     # Parse page range
@@ -694,18 +742,18 @@ def main():
     engine_name = "Groq Vision (Llama 4 Scout)" if args.engine == "groq" else "Tesseract OCR"
     
     print(f"\n{'='*60}")
-    print(f"🔄 DocuMorph - Gujarati PDF Extractor")
+    print(f"DocuMorph - Gujarati PDF Extractor")
     print(f"{'='*60}")
-    print(f"   Input:  {pdf_path}")
-    print(f"   Output: {output_path}")
-    print(f"   Engine: {engine_name}")
+    print(f"Input:  {pdf_path}")
+    print(f"Output: {output_path}")
+    print(f"Engine: {engine_name}")
     if start_page:
-        print(f"   Pages:  {start_page} to {end_page}")
+        print(f"Pages:  {start_page} to {end_page}")
     else:
-        print(f"   Pages:  ALL")
+        print(f"Pages:  ALL")
     
     # Step 1: OCR text extraction
-    print(f"\n📖 Step 1: OCR Text Extraction ({engine_name})...")
+    print(f"\nStep 1: OCR Text Extraction ({engine_name})...")
     
     if args.engine == "groq":
         pages_text = extract_text_groq(str(pdf_path), start_page, end_page)
@@ -713,7 +761,7 @@ def main():
         pages_text = extract_text_tesseract(str(pdf_path), start_page, end_page)
     
     if not pages_text:
-        print("❌ Error: No text could be extracted from the PDF.")
+        print("Error: No text could be extracted from the PDF.")
         sys.exit(1)
     
     # Optionally save raw text
@@ -722,29 +770,29 @@ def main():
         save_raw_text(pages_text, raw_path)
     
     # Step 2: Parse questions
-    print(f"\n🔧 Step 2: Parsing questions from OCR text...")
+    print(f"\nStep 2: Parsing questions from OCR text...")
     questions = parse_questions(pages_text)
     
     if not questions:
-        print("❌ No questions found. Saving raw OCR text for inspection...")
+        print("No questions found. Saving raw OCR text for inspection...")
         raw_path = f"{pdf_path.stem}_raw_ocr.txt"
         save_raw_text(pages_text, raw_path)
-        print(f"   Check {raw_path} to see what OCR extracted.")
+        print(f"Check {raw_path} to see what OCR extracted.")
         sys.exit(1)
     
     # Step 3: Validate
-    print(f"\n✔️  Step 3: Validating...")
+    print(f"\nStep 3: Validating...")
     validate_questions(questions)
     
     # Step 4: Show sample
     print_sample(questions, args.sample)
     
     # Step 5: Save JSON
-    print(f"\n💾 Step 4: Saving JSON...")
+    print(f"\nStep 4: Saving JSON...")
     save_json(questions, output_path)
     
-    print(f"\n🎉 Done! {len(questions)} questions extracted successfully.")
-    print(f"   Output: {output_path}")
+    print(f"\nDone! {len(questions)} questions extracted successfully.")
+    print(f"Output: {output_path}")
 
 
 if __name__ == "__main__":
