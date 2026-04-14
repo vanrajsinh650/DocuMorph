@@ -31,7 +31,7 @@ else:
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # OpenRouter API config
-OPENROUTER_MODEL = "qwen/qwen-2.5-vl-72b-instruct"  # Exceptional uncensored OCR model
+OPENROUTER_MODEL = "qwen/qwen-2.5-vl-7b-instruct"  # Fast, cheap, great OCR (10x cheaper than 72B)
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # The prompt that instructs the vision model to extract text accurately
@@ -359,13 +359,17 @@ def ocr_page_openrouter(client: OpenRouterClient, page_image: Image.Image, page_
 
         except Exception as e:
             error_msg = str(e)
-            if "413" in error_msg or "too large" in error_msg.lower():
+            if "402" in error_msg or "Payment Required" in error_msg:
+                print(f"   ❌ ERROR 402: Insufficient OpenRouter credits!")
+                print(f"   Add credits at https://openrouter.ai/credits")
+                raise RuntimeError(f"OpenRouter 402: No credits left. Add funds at https://openrouter.ai/credits")
+            elif "413" in error_msg or "too large" in error_msg.lower():
                 print(f"   Image too large, reducing size...")
                 img_b64 = image_to_base64(page_image, max_size=2500)
                 time.sleep(1)
             elif attempt < retry_count - 1:
                 print(f"   Error (page {page_number}, attempt {attempt + 1}): {error_msg[:120]}. Retrying...")
-                time.sleep(2)
+                time.sleep(1)
             else:
                 print(f"   Failed on page {page_number} after {retry_count} attempts: {error_msg[:150]}")
                 return {
@@ -431,9 +435,9 @@ def extract_text_openrouter(pdf_path: str, start_page: int = None, end_page: int
         del img
         gc.collect()
 
-        # Small delay between requests (lighter than Groq)
+        # Small delay between requests
         if i < total - 1:
-            time.sleep(0.5)
+            time.sleep(0.2)
             
         # Periodic save (checkpoint) every 10 pages in case of crash/memory issue
         if len(pages_text) % 10 == 0:
