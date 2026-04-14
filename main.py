@@ -1,12 +1,14 @@
 """
-DocuMorph - Gujarati PDF Question Extractor (OCR-based)
-========================================================
+DocuMorph - Gujarati PDF Question Extractor
+=============================================
 Extracts MCQ questions from scanned Gujarati PDF into structured JSON.
 
-Uses Tesseract OCR with Gujarati language support.
+Supports two OCR engines:
+  1. Groq Vision API (primary) - Uses Llama 4 Scout for high-accuracy Gujarati OCR
+  2. Tesseract OCR (fallback) - Local OCR, lower accuracy for Gujarati
 
 Usage:
-    python main.py <pdf_path> [--output output.json] [--pages 1-10]
+    python main.py <pdf_path> [--output output.json] [--pages 1-10] [--engine groq|tesseract]
 
 Output JSON format:
     {
@@ -36,22 +38,202 @@ import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-import pytesseract
-from pdf2image import convert_from_path
-from PIL import Image, ImageFilter, ImageEnhance
+import base64
 import re
 import json
 import os
+import time
 import argparse
 from pathlib import Path
+from io import BytesIO
+
+from pdf2image import convert_from_path
+from PIL import Image, ImageFilter, ImageEnhance
 
 # ─── CONFIGURATION ──────────────────────────────────────────────────────────
 TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 POPPLER_PATH = r"C:\Users\Vanrajsinh\Desktop\DevVault\Building-Hub\DocuMorph\poppler\poppler-24.08.0\Library\bin"
 
-# Set Tesseract path
-pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+# Groq API config
+GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
+# The prompt that instructs the vision model to extract text accurately
+GROQ_OCR_PROMPT = """You are an expert OCR system for Gujarati language documents. Extract ALL text from this image EXACTLY as it appears in the document.
+
+CRITICAL RULES:
+1. This page has a TWO-COLUMN layout. Read the LEFT column first (top to bottom), then the RIGHT column (top to bottom).
+2. Extract EVERY Gujarati word EXACTLY as written - do NOT transliterate, translate, or modify any word.
+3. Preserve the exact question number format (e.g., 001), 002), etc.)
+4. Preserve exam references in parentheses like (PI 38/2017-18), (STI 139/2020-21), etc.
+5. Preserve option labels: (A), (B), (C), (D) exactly as they appear.
+6. Keep all Gujarati characters, matras, and conjuncts EXACTLY as they appear in the original.
+7. Do NOT add any commentary, notes, or explanations. Output ONLY the extracted text.
+8. Ignore any answer keys at the bottom of columns (like "1-C/2-D/3-A..." patterns).
+9. Ignore any watermarks or page headers/footers.
+
+Output the raw text only, maintaining the original line structure as much as possible."""
+
+
+# ─── GROQ VISION OCR ────────────────────────────────────────────────────────
+
+def get_groq_client():
+    """Initialize and return Groq client."""
+    try:
+        from groq import Groq
+    except ImportError:
+        print("❌ Error: 'groq' package not installed. Run: pip install groq")
+        sys.exit(1)
+    
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        # Try loading from .env file in project directory
+        env_path = Path(__file__).parent / ".env"
+        if env_path.exists():
+            with open(env_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("GROQ_API_KEY="):
+                        api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
+    
+    if not api_key:
+        print("❌ Error: GROQ_API_KEY not found.")
+        print("   Set it as an environment variable:")
+        print("     set GROQ_API_KEY=your_key_here")
+        print("   Or create a .env file in the project directory with:")
+        print("     GROQ_API_KEY=your_key_here")
+        print("   Get a free key at: https://console.groq.com/")
+        sys.exit(1)
+    
+    return Groq(api_key=api_key)
+
+
+def image_to_base64(image: Image.Image, max_size: int = 3800) -> str:
+    """Convert PIL Image to base64 string, resizing if needed to stay under Groq limits."""
+    # Resize if too large (Groq has 4MB base64 limit)
+    width, height = image.size
+    if width > max_size or height > max_size:
+        ratio = min(max_size / width, max_size / height)
+        new_size = (int(width * ratio), int(height * ratio))
+        image = image.resize(new_size, Image.LANCZOS)
+    
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=90)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def ocr_page_groq(client, page_image: Image.Image, page_number: int, retry_count: int = 3) -> dict:
+    """
+    Use Groq Vision API to extract text from a page image.
+    Sends the full page image (the model handles layout understanding).
+    """
+    img_b64 = image_to_base64(page_image)
+    
+    for attempt in range(retry_count):
+        try:
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": GROQ_OCR_PROMPT
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{img_b64}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                temperature=0.0,
+                max_completion_tokens=4096,
+            )
+            
+            text = response.choices[0].message.content.strip()
+            return {
+                "page_number": page_number,
+                "text": text
+            }
+            
+        except Exception as e:
+            error_msg = str(e)
+            if "429" in error_msg or "rate_limit" in error_msg.lower():
+                wait_time = 15 * (attempt + 1)
+                print(f"   ⏳ Rate limited. Waiting {wait_time}s before retry ({attempt + 1}/{retry_count})...")
+                time.sleep(wait_time)
+            elif "413" in error_msg or "too large" in error_msg.lower():
+                # Image too large, try with smaller size
+                print(f"   📐 Image too large, reducing size...")
+                img_b64 = image_to_base64(page_image, max_size=2500)
+                time.sleep(2)
+            else:
+                if attempt < retry_count - 1:
+                    print(f"   ⚠️ Error on page {page_number}: {error_msg[:100]}. Retrying...")
+                    time.sleep(5)
+                else:
+                    print(f"   ❌ Failed on page {page_number} after {retry_count} attempts: {error_msg[:150]}")
+                    return {
+                        "page_number": page_number,
+                        "text": ""
+                    }
+    
+    return {"page_number": page_number, "text": ""}
+
+
+def extract_text_groq(pdf_path: str, start_page: int = None, end_page: int = None) -> list[dict]:
+    """
+    Extract text from PDF pages using Groq Vision API.
+    Converts pages to images and sends each to the Groq vision model.
+    """
+    client = get_groq_client()
+    
+    print(f"\n📖 Converting PDF pages to images...")
+    
+    kwargs = {
+        "pdf_path": pdf_path,
+        "dpi": 300,
+        "poppler_path": POPPLER_PATH,
+        "fmt": "jpeg",
+        "thread_count": 4,
+    }
+    
+    if start_page is not None:
+        kwargs["first_page"] = start_page
+    if end_page is not None:
+        kwargs["last_page"] = end_page
+    
+    images = convert_from_path(**kwargs)
+    
+    actual_start = start_page or 1
+    total = len(images)
+    print(f"   Converted {total} pages to images")
+    
+    print(f"\n🔍 Running Groq Vision OCR (Llama 4 Scout)...")
+    pages_text = []
+    
+    for i, img in enumerate(images):
+        page_num = actual_start + i
+        print(f"   Processing page {page_num} ({i + 1}/{total})...", end=" ")
+        
+        result = ocr_page_groq(client, img, page_num)
+        pages_text.append(result)
+        
+        text_len = len(result["text"])
+        print(f"✅ ({text_len} chars)")
+        
+        # Small delay between requests to avoid rate limits
+        if i < total - 1:
+            time.sleep(2)
+    
+    return pages_text
+
+
+# ─── TESSERACT OCR (FALLBACK) ───────────────────────────────────────────────
 
 def preprocess_image(image: Image.Image) -> Image.Image:
     """
@@ -81,8 +263,11 @@ def preprocess_image(image: Image.Image) -> Image.Image:
     return img
 
 
-def ocr_image(image: Image.Image) -> str:
+def ocr_image_tesseract(image: Image.Image) -> str:
     """Run Tesseract OCR on a preprocessed image and return text."""
+    import pytesseract
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+    
     processed = preprocess_image(image)
     
     # PSM 6 = Assume a single uniform block of text
@@ -98,8 +283,7 @@ def ocr_image(image: Image.Image) -> str:
 def ocr_page_two_columns(page_image: Image.Image, page_number: int) -> dict:
     """
     Split a two-column PDF page into left and right halves,
-    OCR each separately, and concatenate left then right.
-    This preserves correct question ordering.
+    OCR each separately with Tesseract, and concatenate left then right.
     """
     width, height = page_image.size
     
@@ -113,8 +297,8 @@ def ocr_page_two_columns(page_image: Image.Image, page_number: int) -> dict:
     right_col = page_image.crop((width // 2 - margin, 0, width, height))
     
     # OCR each column separately
-    left_text = ocr_image(left_col)
-    right_text = ocr_image(right_col)
+    left_text = ocr_image_tesseract(left_col)
+    right_text = ocr_image_tesseract(right_col)
     
     # Combine: left column first, then right column
     combined_text = left_text.strip() + "\n\n" + right_text.strip()
@@ -125,15 +309,13 @@ def ocr_page_two_columns(page_image: Image.Image, page_number: int) -> dict:
     }
 
 
-def extract_text_from_pdf(pdf_path: str, start_page: int = None, end_page: int = None) -> list[dict]:
+def extract_text_tesseract(pdf_path: str, start_page: int = None, end_page: int = None) -> list[dict]:
     """
-    Convert PDF pages to images and run OCR on each.
+    Convert PDF pages to images and run Tesseract OCR on each.
     Uses two-column splitting for proper reading order.
-    Returns list of {page_number, text} dicts.
     """
     print(f"\n📖 Converting PDF pages to images...")
     
-    # Convert PDF pages to images
     kwargs = {
         "pdf_path": pdf_path,
         "dpi": 300,
@@ -153,8 +335,7 @@ def extract_text_from_pdf(pdf_path: str, start_page: int = None, end_page: int =
     total = len(images)
     print(f"   Converted {total} pages to images")
     
-    # OCR each page (two-column split)
-    print(f"\n🔍 Running OCR (Gujarati + English) with 2-column split...")
+    print(f"\n🔍 Running Tesseract OCR (Gujarati + English) with 2-column split...")
     pages_text = []
     
     for i, img in enumerate(images):
@@ -167,6 +348,8 @@ def extract_text_from_pdf(pdf_path: str, start_page: int = None, end_page: int =
     
     return pages_text
 
+
+# ─── QUESTION PARSING ────────────────────────────────────────────────────────
 
 def parse_questions(pages_text: list[dict]) -> list[dict]:
     """
@@ -185,10 +368,12 @@ def parse_questions(pages_text: list[dict]) -> list[dict]:
     
     full_text = "\n".join(full_text_segments)
     
+    # Clean answer keys like "1-C /2-D/3-A/4-A/5-D/6-A" before parsing
+    full_text = re.sub(r'\d+-[A-D]\s*/\s*\d+-[A-D](?:\s*/\s*\d+-[A-D])*(?:\s*\|?\s*)?', '', full_text)
+    
     # Pattern to match question numbers like "001)", "002)", "1234)", etc.
-    # Also handle OCR variants like "001 )", "O01)" (O instead of 0), etc.
     question_pattern = re.compile(
-        r'(?:^|\n)\s*(\d{1,4})\s*\)\s*(.+?)(?=(?:\n\s*\d{1,4}\s*\)\s)|\Z)',
+        r'(?:^|\n)\s*(\d{1,4})\s*\)\s*(.+?)(?=(?:\n\s*\d{1,4}\s*\)\s)|<<<PAGE_|\Z)',
         re.DOTALL
     )
     
@@ -240,7 +425,6 @@ def parse_questions(pages_text: list[dict]) -> list[dict]:
 
 def extract_exam_reference(q_block: str) -> str | None:
     """Extract exam reference like (PI 38/2017-18), (STI 139/2020-21), etc."""
-    # Pattern 1: Standard format (LETTERS DIGITS/YEAR-YEAR)
     patterns = [
         re.compile(r'\(([A-Z][A-Za-z]*(?:\s+[A-Za-z]+)*\s*[\-]?\s*\d+\s*/\s*\d{4}(?:\s*-\s*\d{2,4})?)\)'),
         re.compile(r'\(([^()]*\d+\s*/\s*\d{4}(?:\s*-\s*\d{2,4})?)\)'),
@@ -265,9 +449,6 @@ def normalize_option_labels(text: str) -> str:
         (C) → (0) or (૦) 
         (D) → (2) or (12)
     """
-    # Order matters: do (12) before (1) to avoid partial matches
-    # Pattern: (label) at option positions — only replace when it looks like an option marker
-    
     # (8) → (B) — very common OCR confusion
     text = re.sub(r'\(8\)\s', '(B) ', text)
     # (3) → (B) — when appearing after (A) context  
@@ -312,7 +493,6 @@ def extract_options(q_block: str) -> dict:
     
     # Extract each option
     for label in ['A', 'B', 'C', 'D']:
-        # Handle OCR spacing variants: (A), ( A ), (A ), ( A)
         pattern = re.compile(
             rf'\(\s*{label}\s*\)\s*(.+?)(?=\s*\(\s*[A-D]\s*\)|$)',
             re.DOTALL
@@ -352,12 +532,18 @@ def clean_text(text: str) -> str:
     text = re.sub(r'<<<PAGE_\d+>>>', '', text)
     # Remove common OCR artifacts
     text = re.sub(r'[|_]{2,}', '', text)
+    # Remove answer key lines
+    text = re.sub(r'\d+-[A-D]\s*/\s*\d+-[A-D](?:\s*/\s*\d+-[A-D])*', '', text)
+    # Remove watermark text
+    text = re.sub(r'WEBSANKUL®?', '', text, flags=re.IGNORECASE)
     # Normalize whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     # Remove leading/trailing special characters
     text = text.strip('- •')
     return text
 
+
+# ─── OUTPUT & VALIDATION ────────────────────────────────────────────────────
 
 def save_json(questions: list[dict], output_path: str):
     """Save questions to a JSON file with UTF-8 encoding."""
@@ -448,9 +634,11 @@ def validate_questions(questions: list[dict]) -> dict:
     return stats
 
 
+# ─── MAIN ────────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser(
-        description="DocuMorph - Extract Gujarati MCQ questions from scanned PDF to JSON (OCR)"
+        description="DocuMorph - Extract Gujarati MCQ questions from scanned PDF to JSON"
     )
     parser.add_argument(
         "pdf_path",
@@ -465,6 +653,12 @@ def main():
         "--pages", "-p",
         default=None,
         help="Page range to process (e.g., '1-10'). Default: all pages"
+    )
+    parser.add_argument(
+        "--engine", "-e",
+        choices=["groq", "tesseract"],
+        default="groq",
+        help="OCR engine to use (default: groq). 'groq' = Groq Vision API (high accuracy), 'tesseract' = local Tesseract (lower accuracy)"
     )
     parser.add_argument(
         "--sample", "-s",
@@ -497,19 +691,26 @@ def main():
     # Default output path
     output_path = args.output or f"{pdf_path.stem}_questions.json"
     
+    engine_name = "Groq Vision (Llama 4 Scout)" if args.engine == "groq" else "Tesseract OCR"
+    
     print(f"\n{'='*60}")
-    print(f"🔄 DocuMorph - Gujarati PDF OCR Extractor")
+    print(f"🔄 DocuMorph - Gujarati PDF Extractor")
     print(f"{'='*60}")
     print(f"   Input:  {pdf_path}")
     print(f"   Output: {output_path}")
+    print(f"   Engine: {engine_name}")
     if start_page:
         print(f"   Pages:  {start_page} to {end_page}")
     else:
         print(f"   Pages:  ALL")
     
     # Step 1: OCR text extraction
-    print(f"\n📖 Step 1: OCR Text Extraction...")
-    pages_text = extract_text_from_pdf(str(pdf_path), start_page, end_page)
+    print(f"\n📖 Step 1: OCR Text Extraction ({engine_name})...")
+    
+    if args.engine == "groq":
+        pages_text = extract_text_groq(str(pdf_path), start_page, end_page)
+    else:
+        pages_text = extract_text_tesseract(str(pdf_path), start_page, end_page)
     
     if not pages_text:
         print("❌ Error: No text could be extracted from the PDF.")

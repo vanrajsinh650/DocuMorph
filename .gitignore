@@ -7,3 +7,4 @@ guj.traineddata
 tesseract_installer.exe
 *_raw_ocr.txt
 *.pdf
+.env
