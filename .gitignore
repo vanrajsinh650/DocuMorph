@@ -6,5 +6,7 @@ poppler.zip
 guj.traineddata
 tesseract_installer.exe
 *_raw_ocr.txt
+*_checkpoint.json
+*_questions.json
 *.pdf
 .env

@@ -3,8 +3,8 @@ import io
 
 # Fix Windows console encoding for Gujarati/Unicode output (only when running directly)
 if __name__ == "__main__":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
 
 import base64
 import re
@@ -16,20 +16,23 @@ import argparse
 from pathlib import Path
 from io import BytesIO
 
-from pdf2image import convert_from_path
 from PIL import Image, ImageFilter, ImageEnhance
+import fitz  # PyMuPDF
+import gc
 
 # CONFIGURATION (auto-detect platform)
 if platform.system() == "Windows":
     TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-    POPPLER_PATH = r"C:\Users\Vanrajsinh\Desktop\DevVault\Building-Hub\DocuMorph\poppler\poppler-24.08.0\Library\bin"
 else:
-    # Linux (Streamlit Cloud) — poppler and tesseract are system packages
+    # Linux (Streamlit Cloud) — tesseract is a system package
     TESSERACT_PATH = "tesseract"
-    POPPLER_PATH = None  # pdf2image finds it automatically on Linux
 
 # Groq API config
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+# OpenRouter API config
+OPENROUTER_MODEL = "qwen/qwen-2.5-vl-72b-instruct"  # Exceptional uncensored OCR model
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # The prompt that instructs the vision model to extract text accurately
 GROQ_OCR_PROMPT = """You are an expert OCR system for Gujarati language documents. Extract ALL text from this image EXACTLY as it appears in the document.
@@ -254,34 +257,229 @@ def ocr_page_groq(key_pool: GroqKeyPool, page_image: Image.Image, page_number: i
     return {"page_number": page_number, "text": ""}
 
 
+# OPENROUTER VISION OCR
+
+class OpenRouterClient:
+    """
+    Manages OpenRouter API access using the OpenAI-compatible SDK.
+    No rate limit rotation needed — OpenRouter handles scaling.
+    """
+
+    def __init__(self):
+        from openai import OpenAI
+        self.api_key = self._load_key()
+        self.client = OpenAI(
+            base_url=OPENROUTER_BASE_URL,
+            api_key=self.api_key,
+        )
+        print(f"OpenRouter API key loaded")
+
+    def _load_key(self) -> str:
+        """Load OpenRouter API key from Streamlit secrets, environment, or .env file."""
+        # 1. Check Streamlit secrets
+        try:
+            import streamlit as st
+            key = st.secrets.get("OPENROUTER_API_KEY", "")
+            if key and key != "your_openrouter_api_key_here":
+                return str(key)
+        except Exception:
+            pass
+
+        # 2. Check .env file
+        env_path = Path(__file__).parent / ".env"
+        if env_path.exists():
+            with open(env_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        k, v = line.split('=', 1)
+                        if k.strip() == "OPENROUTER_API_KEY":
+                            val = v.strip().strip('"').strip("'")
+                            if val and val != "your_openrouter_api_key_here":
+                                return val
+
+        # 3. Check environment variable
+        key = os.environ.get("OPENROUTER_API_KEY", "")
+        if key and key != "your_openrouter_api_key_here":
+            return key
+
+        print("Error: No OpenRouter API key found.")
+        print("Add to .env file:")
+        print("OPENROUTER_API_KEY=sk-or-v1-your_key_here")
+        print("Get your key at: https://openrouter.ai/keys")
+        sys.exit(1)
+
+
+def ocr_page_openrouter(client: OpenRouterClient, page_image: Image.Image, page_number: int, retry_count: int = 3) -> dict:
+    """
+    Use OpenRouter Vision API to extract text from a page image.
+    No rate limit issues — OpenRouter scales automatically.
+    """
+    img_b64 = image_to_base64(page_image)
+
+    for attempt in range(retry_count):
+        try:
+            response = client.client.chat.completions.create(
+                model=OPENROUTER_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": GROQ_OCR_PROMPT
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{img_b64}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                temperature=0.0,
+                max_tokens=4096,
+                extra_headers={
+                    "HTTP-Referer": "https://github.com/DocuMorph",
+                    "X-Title": "DocuMorph"
+                }
+            )
+
+            content = response.choices[0].message.content
+            if content is None:
+                finish_reason = getattr(response.choices[0], "finish_reason", "unknown")
+                raise Exception(f"API returned no content (blocked/filtered). Finish reason: {finish_reason}")
+            
+            text = content.strip()
+            return {
+                "page_number": page_number,
+                "text": text
+            }
+
+        except Exception as e:
+            error_msg = str(e)
+            if "413" in error_msg or "too large" in error_msg.lower():
+                print(f"   Image too large, reducing size...")
+                img_b64 = image_to_base64(page_image, max_size=2500)
+                time.sleep(1)
+            elif attempt < retry_count - 1:
+                print(f"   Error (page {page_number}, attempt {attempt + 1}): {error_msg[:120]}. Retrying...")
+                time.sleep(2)
+            else:
+                print(f"   Failed on page {page_number} after {retry_count} attempts: {error_msg[:150]}")
+                return {
+                    "page_number": page_number,
+                    "text": ""
+                }
+
+    return {"page_number": page_number, "text": ""}
+
+
+def extract_text_openrouter(pdf_path: str, start_page: int = None, end_page: int = None) -> list[dict]:
+    """
+    Extract text from PDF pages using OpenRouter Vision API.
+    Processes pages ONE AT A TIME. No rate limit issues.
+    """
+    or_client = OpenRouterClient()
+
+    # Determine page range
+    if start_page and end_page:
+        first_page = start_page
+        last_page = end_page
+    else:
+        total_pages = _get_page_count(pdf_path)
+        first_page = start_page or 1
+        last_page = end_page or total_pages
+        if last_page == 0:
+            print("Could not detect page count, trying page 1...")
+            last_page = first_page
+
+    total = last_page - first_page + 1
+    print(f"Pages to process: {first_page} to {last_page} ({total} pages)")
+    print(f"OCR Engine: OpenRouter Vision ({OPENROUTER_MODEL})")
+    print(f"---")
+
+    pages_text = []
+
+    for page_num in range(first_page, last_page + 1):
+        i = page_num - first_page
+        print(f"[Page {page_num}] Converting to image (DPI=150)...")
+
+        try:
+            img = _convert_single_page(pdf_path, page_num, dpi=150)
+        except Exception as e:
+            print(f"[Page {page_num}] ERROR converting: {str(e)[:150]}")
+            pages_text.append({"page_number": page_num, "text": ""})
+            continue
+
+        if img is None:
+            print(f"[Page {page_num}] WARNING: No image returned, skipping.")
+            pages_text.append({"page_number": page_num, "text": ""})
+            continue
+
+        w, h = img.size
+        print(f"[Page {page_num}] Image: {w}x{h}px. Sending to OpenRouter...")
+
+        result = ocr_page_openrouter(or_client, img, page_num)
+        pages_text.append(result)
+
+        text_len = len(result["text"])
+        print(f"[Page {page_num}] Done. Extracted {text_len} chars. ({i + 1}/{total})")
+
+        # Free memory aggressively
+        del img
+        gc.collect()
+
+        # Small delay between requests (lighter than Groq)
+        if i < total - 1:
+            time.sleep(0.5)
+            
+        # Periodic save (checkpoint) every 10 pages in case of crash/memory issue
+        if len(pages_text) % 10 == 0:
+            checkpoint_path = f"{Path(pdf_path).stem}_checkpoint.json"
+            with open(checkpoint_path, 'w', encoding='utf-8') as f:
+                json.dump({"processed_pages": len(pages_text), "pages": pages_text}, f, ensure_ascii=False)
+            print(f"   [Checkpoint saved: {checkpoint_path}]")
+
+    print(f"---")
+    print(f"OCR complete. Processed {len(pages_text)} pages.")
+    return pages_text
+
+
 def _get_page_count(pdf_path: str) -> int:
-    """Get total page count of a PDF without loading all pages."""
+    """Get total page count of a PDF using PyMuPDF (fast)."""
     try:
-        import pdfplumber
-        with pdfplumber.open(pdf_path) as pdf:
-            return len(pdf.pages)
-    except Exception:
-        # Fallback: convert first page just to check
+        with fitz.open(pdf_path) as doc:
+            return len(doc)
+    except Exception as e:
+        print(f"Error getting page count: {e}")
         return 0
 
 
-def _convert_single_page(pdf_path: str, page_num: int, dpi: int = 200) -> Image.Image:
-    """Convert a single PDF page to an image. Memory-efficient."""
-    kwargs = {
-        "pdf_path": pdf_path,
-        "dpi": dpi,
-        "fmt": "jpeg",
-        "first_page": page_num,
-        "last_page": page_num,
-        "thread_count": 1,
-    }
-    if POPPLER_PATH:
-        kwargs["poppler_path"] = POPPLER_PATH
-    
-    images = convert_from_path(**kwargs)
-    if images:
-        return images[0]
-    return None
+def _convert_single_page(pdf_path: str, page_num: int, dpi: int = 150) -> Image.Image:
+    """Convert a single PDF page to an image using PyMuPDF. Very fast and memory-efficient."""
+    # page_num is 1-indexed, PyMuPDF is 0-indexed
+    try:
+        with fitz.open(pdf_path) as doc:
+            page = doc.load_page(page_num - 1)
+            # Zoom matrix for DPI. 72 is default PDF resolution
+            zoom = dpi / 72.0
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            
+            # Convert PyMuPDF pixmap to PIL Image
+            mode = "RGB" if pix.n >= 3 else "L"
+            img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+            
+            # Explicitly free PyMuPDF objects
+            pix = None
+            page = None
+            
+            return img
+    except Exception as e:
+        print(f"Error converting page {page_num}: {e}")
+        return None
 
 
 def extract_text_groq(pdf_path: str, start_page: int = None, end_page: int = None) -> list[dict]:
@@ -784,9 +982,9 @@ def main():
     )
     parser.add_argument(
         "--engine", "-e",
-        choices=["groq", "tesseract"],
-        default="groq",
-        help="OCR engine to use (default: groq). 'groq' = Groq Vision API (high accuracy), 'tesseract' = local Tesseract (lower accuracy)"
+        choices=["openrouter", "groq", "tesseract"],
+        default="openrouter",
+        help="OCR engine to use (default: openrouter). 'openrouter' = OpenRouter Vision API (unlimited, no rate limits), 'groq' = Groq Vision API (rate limited), 'tesseract' = local Tesseract (lower accuracy)"
     )
     parser.add_argument(
         "--sample", "-s",
@@ -819,7 +1017,12 @@ def main():
     # Default output path
     output_path = args.output or f"{pdf_path.stem}_questions.json"
     
-    engine_name = "Groq Vision (Llama 4 Scout)" if args.engine == "groq" else "Tesseract OCR"
+    engine_names = {
+        "openrouter": f"OpenRouter Vision ({OPENROUTER_MODEL})",
+        "groq": "Groq Vision (Llama 4 Scout)",
+        "tesseract": "Tesseract OCR"
+    }
+    engine_name = engine_names.get(args.engine, args.engine)
     
     print(f"\n{'='*60}")
     print(f"DocuMorph - Gujarati PDF Extractor")
@@ -835,7 +1038,9 @@ def main():
     # Step 1: OCR text extraction
     print(f"\nStep 1: OCR Text Extraction ({engine_name})...")
     
-    if args.engine == "groq":
+    if args.engine == "openrouter":
+        pages_text = extract_text_openrouter(str(pdf_path), start_page, end_page)
+    elif args.engine == "groq":
         pages_text = extract_text_groq(str(pdf_path), start_page, end_page)
     else:
         pages_text = extract_text_tesseract(str(pdf_path), start_page, end_page)
