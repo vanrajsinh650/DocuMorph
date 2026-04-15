@@ -283,7 +283,7 @@ def _parse_range_str(range_str: str) -> tuple[int, int]:
     return val, val
 
 
-def _run_extraction(tmp_path: str, engine: str, start_page: int, end_page: int,
+def _run_extraction(tmp_path: str, start_page: int, end_page: int,
                     log_container, progress_bar, existing_pages: list = None):
     """
     Run OCR extraction for the given page range.
@@ -505,7 +505,7 @@ if uploaded_file is not None:
 
             tmp_path = st.session_state["tmp_path"]
             pages_text, questions, stats, log_text, last_page, had_error = _run_extraction(
-                tmp_path, engine, resume_start, resume_end,
+                tmp_path, resume_start, resume_end,
                 log_container, progress,
                 existing_pages=partial.get("pages_text", [])
             )
@@ -557,7 +557,7 @@ if uploaded_file is not None:
             tmp_path = st.session_state["tmp_path"]
 
             pages_text, questions, stats, log_text, last_page, had_error = _run_extraction(
-                tmp_path, engine, start_page, end_page,
+                tmp_path, start_page, end_page,
                 log_container, progress
             )
 
