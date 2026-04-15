@@ -16,6 +16,7 @@ from main import (
     extract_text_tesseract,
     extract_text_openrouter,
     extract_text_tesseract_ai,
+    enhance_pages_with_ai,
     _get_page_count,
     parse_questions,
     validate_questions,
@@ -300,34 +301,25 @@ def _run_extraction(tmp_path: str, engine: str, start_page: int, end_page: int,
     last_processed_page = start_page - 1
 
     try:
-        # Step 1: OCR
-        engine_label = {
-            "openrouter": "OpenRouter (Qwen-2.5-VL)",
-            "groq": "Groq Vision (Llama 4)",
-            "tesseract": "Tesseract OCR",
-            "tesseract+ai": "Tesseract + AI Fix (Hybrid)",
-        }.get(engine, engine)
+        # Using standard Tesseract extraction
+        engine = "tesseract"
 
-        print(f"[1/3] Starting OCR — {engine_label}")
+        print(f"[1/3] Starting Base OCR — Tesseract")
         print(f"  Pages: {start_page} to {end_page}")
 
         progress_bar.progress(5)
 
-        if engine == "openrouter":
-            new_pages = extract_text_openrouter(tmp_path, start_page, end_page)
-        elif engine == "groq":
-            new_pages = extract_text_groq(tmp_path, start_page, end_page)
-        elif engine == "tesseract+ai":
-            new_pages = extract_text_tesseract_ai(tmp_path, start_page, end_page, ai_provider="openrouter")
-        else:
-            new_pages = extract_text_tesseract(tmp_path, start_page, end_page)
+        new_pages = extract_text_tesseract(tmp_path, start_page, end_page)
 
         if new_pages:
             pages_text.extend(new_pages)
             last_processed_page = end_page
 
         progress_bar.progress(50)
-        print(f"[1/3] OCR complete — {len(new_pages)} pages extracted.")
+        print(f"[1/3] Base OCR complete — {len(new_pages)} pages extracted.")
+
+        # Save raw pages_text in state so it can be enhanced later if the user chooses
+        st.session_state["raw_pages_text"] = pages_text
 
         # Step 2: Parse
         print(f"[2/3] Parsing questions...")
@@ -426,9 +418,6 @@ if uploaded_file is not None:
 
     # ── Settings expander ──
     with st.expander("Settings", expanded=True):
-        # Using cheap text correction hybrid pipeline
-        engine = "tesseract+ai"
-
         st.markdown("**Page Selection**")
         page_mode = st.radio(
             "How to process pages",
@@ -622,6 +611,48 @@ if "results" in st.session_state:
 
     st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
+    # --- AI Enhancement Box ---
+    if not st.session_state.get("ai_enhanced", False) and "raw_pages_text" in st.session_state:
+        st.markdown("""
+        <div style="background-color:#1e3a8a; padding: 1.5rem; border-radius: 8px; margin-bottom: 2rem; border-left: 4px solid #3b82f6;">
+            <h3 style="margin-top: 0; color: #ffffff;">✨ Text Quality Looks Garbled?</h3>
+            <p style="color: #bfdbfe; font-size: 0.95rem; margin-bottom: 1rem;">
+                The initial extraction was generated using standard Tesseract OCR. If you notice strange letters or missing characters in the questions below, you can optionally run our AI Text Corrector to completely fix the text automatically.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if st.button("✨ Check & Fix Words with AI", type="primary", use_container_width=True):
+            print("starting ai enhancement")
+            # 1. Take raw text
+            raw_pages_text = st.session_state["raw_pages_text"]
+            # 2. Process with AI
+            with st.spinner("AI is fixing Gujarati text... please wait..."):
+                enhanced_pages = enhance_pages_with_ai(raw_pages_text, ai_provider="openrouter")
+                # 3. Save enhanced raw pages
+                st.session_state["raw_pages_text"] = enhanced_pages
+                # 4. Re-parse
+                questions = parse_questions(enhanced_pages)
+                
+                stats = {
+                    "total": len(questions),
+                    "with_4_options": sum(1 for q in questions if len(q.get("options", {})) == 4),
+                    "with_exam_ref": sum(1 for q in questions if "exam_reference" in q),
+                    "pages": len(set(q["page_number"] for q in questions)),
+                }
+                
+                result_json = {"total_questions": len(questions), "questions": questions}
+                json_str = json.dumps(result_json, ensure_ascii=False, indent=2)
+                
+                st.session_state["results"] = {
+                    "questions": questions,
+                    "stats": stats,
+                    "json_str": json_str,
+                    "output_filename": output_filename,
+                    "full_log": full_log,
+                }
+                st.session_state["ai_enhanced"] = True
+                st.rerun()
     # Stats row
     c1, c2, c3, c4 = st.columns(4)
     with c1:
