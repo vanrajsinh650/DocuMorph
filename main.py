@@ -30,9 +30,22 @@ else:
 # Groq API config
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
-# OpenRouter API config
-OPENROUTER_MODEL = "google/gemma-3-27b-it:free"  # FREE forever, no credits needed, good OCR
+# OpenRouter API config — model cascade (tries in order, falls back on 402/failure)
+OPENROUTER_MODELS = [
+    "qwen/qwen3-vl-8b-instruct",           # 1st: cheapest paid ($0.08/M), fast
+    "qwen/qwen2.5-vl-72b-instruct",         # 2nd: best quality ($0.80/M)
+    "google/gemma-3-27b-it:free",           # 3rd: FREE fallback (rate-limited but $0 forever)
+]
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# OpenRouter TEXT-ONLY models for AI text correction (no vision needed, much cheaper)
+OPENROUTER_TEXT_MODELS = [
+    "qwen/qwen2.5-72b-instruct",            # 1st: extremely smart for formatting & Indic languages
+    "google/gemma-3-27b-it:free",            # 2nd: FREE fallback
+]
+
+# Groq TEXT model for AI text correction
+GROQ_TEXT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # The prompt that instructs the vision model to extract text accurately
 GROQ_OCR_PROMPT = """You are an expert OCR system for Gujarati language documents. Extract ALL text from this image EXACTLY as it appears in the document.
@@ -49,6 +62,27 @@ CRITICAL RULES:
 9. Ignore any watermarks or page headers/footers.
 
 Output the raw text only, maintaining the original line structure as much as possible."""
+
+# Prompt for AI text correction of Tesseract OCR output
+AI_TEXT_FIX_PROMPT = """You are a Gujarati text correction expert. Below is OCR output from a scanned Gujarati MCQ exam book, extracted by Tesseract OCR. The text has errors — some Gujarati words are garbled, partially replaced with random English characters, or incorrectly recognized.
+
+Your job is to FIX the broken/garbled words while preserving everything that is already correct.
+The text is from a GPSC History/Culture Exam. You will encounter names like અશોક, સ્કંદગુપ્ત, ખારવેલ, રુદ્રદમન, મૌર્ય, સોલંકી, મૈત્રક, સિંધુ, હડપ્પા, etc.
+
+RULES:
+1. Fix garbled Gujarati words contextually (e.g., "સ્કેદગુપ" -> "સ્કંદગુપ્ત", "મોંહે-જો-દરો" -> "મોહેં-જો-દડો").
+2. Fix random English characters/fragments that should be Gujarati words (e.g., "HAR" -> "મૂલર", "Casi" -> "બેટકા").
+3. DO NOT change correctly recognized Gujarati words — preserve them exactly.
+4. DO NOT change English words that are intentionally English (like exam names, proper nouns in English, technical terms).
+5. PRESERVE question numbers exactly (001), 002), etc.).
+6. PRESERVE option labels exactly: (A), (B), (C), (D).
+7. PRESERVE exam references in parentheses exactly like (PI 38/2017-18), (STI 139/2020-21).
+8. PRESERVE the exact line structure, line breaks, and formatting.
+9. If a word is completely unrecoverable garbage, remove it rather than guessing wrong.
+10. Output ONLY the corrected text. No explanations, no commentary, no markdown formatting.
+
+RAW OCR TEXT:
+"""
 
 
 # GROQ VISION OCR (Multi-Key Rotation)
@@ -257,35 +291,53 @@ def ocr_page_groq(key_pool: GroqKeyPool, page_image: Image.Image, page_number: i
     return {"page_number": page_number, "text": ""}
 
 
-# OPENROUTER VISION OCR
+# OPENROUTER VISION OCR (Multi-Key Pool + Model Cascade)
 
-class OpenRouterClient:
+class OpenRouterKeyPool:
     """
-    Manages OpenRouter API access using the OpenAI-compatible SDK.
-    No rate limit rotation needed — OpenRouter handles scaling.
+    Manages multiple OpenRouter API keys with round-robin rotation + model cascade.
+
+    Keys in .env as:
+        OPENROUTER_API_KEY_1=key1
+        OPENROUTER_API_KEY_2=key2
+        ...
+        OPENROUTER_API_KEY_20=key20
+    Or a single key:
+        OPENROUTER_API_KEY=key
     """
 
     def __init__(self):
         from openai import OpenAI
-        self.api_key = self._load_key()
-        self.client = OpenAI(
-            base_url=OPENROUTER_BASE_URL,
-            api_key=self.api_key,
-        )
-        print(f"OpenRouter API key loaded")
+        self._OpenAI = OpenAI
+        self.keys = self._load_keys()
+        self.clients = [OpenAI(base_url=OPENROUTER_BASE_URL, api_key=k) for k in self.keys]
+        self.current_index = 0
+        self.total_keys = len(self.keys)
 
-    def _load_key(self) -> str:
-        """Load OpenRouter API key from Streamlit secrets, environment, or .env file."""
+        # Track exhausted keys per model (key_index -> set of exhausted model names)
+        self.exhausted_models = [{} for _ in range(self.total_keys)]  # key_idx -> {model: timestamp}
+
+        # Current model index in the cascade
+        self.current_model_index = 0
+
+        print(f"✓ Loaded {self.total_keys} OpenRouter API key(s)")
+        print(f"✓ Model cascade: {' → '.join(OPENROUTER_MODELS)}")
+
+    def _load_keys(self) -> list[str]:
+        """Load all OpenRouter API keys from Streamlit secrets, environment, or .env file."""
+        keys = []
+        env_vars = {}
+
         # 1. Check Streamlit secrets
         try:
             import streamlit as st
-            key = st.secrets.get("OPENROUTER_API_KEY", "")
-            if key and key != "your_openrouter_api_key_here":
-                return str(key)
+            for k, v in st.secrets.items():
+                if k.startswith("OPENROUTER_API_KEY") and v:
+                    env_vars[k] = str(v)
         except Exception:
             pass
 
-        # 2. Check .env file
+        # 2. Load from .env file
         env_path = Path(__file__).parent / ".env"
         if env_path.exists():
             with open(env_path, 'r') as f:
@@ -293,115 +345,168 @@ class OpenRouterClient:
                     line = line.strip()
                     if line and not line.startswith('#') and '=' in line:
                         k, v = line.split('=', 1)
-                        if k.strip() == "OPENROUTER_API_KEY":
-                            val = v.strip().strip('"').strip("'")
-                            if val and val != "your_openrouter_api_key_here":
-                                return val
+                        key_name = k.strip()
+                        key_val = v.strip().strip('"').strip("'")
+                        if key_name.startswith("OPENROUTER_API_KEY") and key_name not in env_vars:
+                            env_vars[key_name] = key_val
 
-        # 3. Check environment variable
-        key = os.environ.get("OPENROUTER_API_KEY", "")
-        if key and key != "your_openrouter_api_key_here":
-            return key
+        # 3. Check environment variables
+        for k, v in os.environ.items():
+            if k.startswith("OPENROUTER_API_KEY") and k not in env_vars:
+                env_vars[k] = v
 
-        print("Error: No OpenRouter API key found.")
-        print("Add to .env file:")
-        print("OPENROUTER_API_KEY=sk-or-v1-your_key_here")
-        print("Get your key at: https://openrouter.ai/keys")
-        sys.exit(1)
+        # Collect numbered keys: OPENROUTER_API_KEY_1, _2, ...
+        numbered_keys = {}
+        for k, v in env_vars.items():
+            if k.startswith("OPENROUTER_API_KEY_") and v and v != "your_openrouter_api_key_here":
+                try:
+                    num = int(k.split("_")[-1])
+                    numbered_keys[num] = v
+                except ValueError:
+                    pass
+
+        # Add numbered keys in order
+        for num in sorted(numbered_keys.keys()):
+            keys.append(numbered_keys[num])
+
+        # If no numbered keys, try single OPENROUTER_API_KEY
+        if not keys:
+            single_key = env_vars.get("OPENROUTER_API_KEY", "")
+            if single_key and single_key != "your_openrouter_api_key_here":
+                keys.append(single_key)
+
+        if not keys:
+            print("Error: No OpenRouter API keys found.")
+            print("Add keys to .env file:")
+            print("OPENROUTER_API_KEY_1=sk-or-v1-your_first_key")
+            print("OPENROUTER_API_KEY_2=sk-or-v1-your_second_key")
+            print("Get keys at: https://openrouter.ai/keys")
+            sys.exit(1)
+
+        return keys
+
+    def get_client(self, model: str):
+        """Get a non-exhausted client for the given model. Returns (client, key_index) or (None, -1)."""
+        now = time.time()
+        for _ in range(self.total_keys):
+            idx = self.current_index
+            exhausted_ts = self.exhausted_models[idx].get(model, 0)
+            if now >= exhausted_ts:
+                return self.clients[idx], idx
+            self.current_index = (self.current_index + 1) % self.total_keys
+
+        # All keys exhausted for this model
+        return None, -1
+
+    def mark_exhausted(self, key_index: int, model: str, cooldown: int = 300):
+        """Mark a key as exhausted for a specific model (402 = long cooldown, 429 = short)."""
+        self.exhausted_models[key_index][model] = time.time() + cooldown
+        key_num = key_index + 1
+        print(f"   Key #{key_num} exhausted for {model.split('/')[-1]}, cooldown {cooldown}s")
+        self.current_index = (key_index + 1) % self.total_keys
+
+    def advance(self):
+        """Move to next key (round-robin after success)."""
+        self.current_index = (self.current_index + 1) % self.total_keys
 
 
-def ocr_page_openrouter(client: OpenRouterClient, page_image: Image.Image, page_number: int) -> dict:
+def ocr_page_openrouter(key_pool: OpenRouterKeyPool, page_image: Image.Image, page_number: int) -> dict:
     """
-    Use OpenRouter Vision API to extract text from a page image.
-    Handles rate limits (429) with backoff for free models.
+    Use OpenRouter Vision API with model cascade + multi-key rotation.
+    Tries: qwen-7b → qwen-72b → gemma-3-27b:free
+    Rotates through all API keys before falling to next model.
     """
     img_b64 = image_to_base64(page_image)
 
-    max_attempts = 6  # More attempts for rate-limited free models
-    for attempt in range(max_attempts):
-        try:
-            response = client.client.chat.completions.create(
-                model=OPENROUTER_MODEL,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": GROQ_OCR_PROMPT
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{img_b64}"
+    for model_idx, model in enumerate(OPENROUTER_MODELS):
+        is_free = ":free" in model
+        max_attempts = 8 if is_free else 4
+
+        for attempt in range(max_attempts):
+            client, key_idx = key_pool.get_client(model)
+
+            if client is None:
+                # All keys exhausted for this model — fall to next model
+                print(f"   All keys exhausted for {model.split('/')[-1]}. Trying next model...")
+                break
+
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": GROQ_OCR_PROMPT},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
                                 }
-                            }
-                        ]
+                            ]
+                        }
+                    ],
+                    temperature=0.0,
+                    max_tokens=4096,
+                    extra_headers={
+                        "HTTP-Referer": "https://github.com/DocuMorph",
+                        "X-Title": "DocuMorph"
                     }
-                ],
-                temperature=0.0,
-                max_tokens=4096,
-                extra_headers={
-                    "HTTP-Referer": "https://github.com/DocuMorph",
-                    "X-Title": "DocuMorph"
-                }
-            )
+                )
 
-            content = response.choices[0].message.content
-            if content is None:
-                finish_reason = getattr(response.choices[0], "finish_reason", "unknown")
-                raise Exception(f"API returned no content (blocked/filtered). Finish reason: {finish_reason}")
+                content = response.choices[0].message.content
+                if content is None:
+                    raise Exception("API returned no content (blocked/filtered)")
 
-            text = content.strip()
-            return {
-                "page_number": page_number,
-                "text": text
-            }
+                text = content.strip()
+                key_pool.advance()
+                return {"page_number": page_number, "text": text}
 
-        except Exception as e:
-            error_msg = str(e)
+            except Exception as e:
+                error_msg = str(e)
 
-            if "402" in error_msg or "Payment Required" in error_msg:
-                print(f"   ❌ ERROR 402: Insufficient OpenRouter credits!")
-                print(f"   Add credits at https://openrouter.ai/credits")
-                raise RuntimeError(f"OpenRouter 402: No credits left. Add funds at https://openrouter.ai/credits")
+                if "404" in error_msg or "No endpoints" in error_msg:
+                    # Model doesn't exist — skip to next model immediately
+                    print(f"   Model {model.split('/')[-1]} not available. Skipping to next...")
+                    break
 
-            elif "429" in error_msg or "rate" in error_msg.lower():
-                # Rate limited (common with free models) — wait and retry
-                wait = min(5 * (attempt + 1), 30)  # 5s, 10s, 15s, 20s, 25s, 30s
-                print(f"   ⏳ Rate limited (attempt {attempt + 1}/{max_attempts}). Waiting {wait}s...")
-                time.sleep(wait)
+                elif "402" in error_msg or "Payment Required" in error_msg:
+                    # No credits on this key for this model — mark exhausted permanently
+                    key_pool.mark_exhausted(key_idx, model, cooldown=99999)
 
-            elif "413" in error_msg or "too large" in error_msg.lower():
-                print(f"   Image too large, reducing size...")
-                img_b64 = image_to_base64(page_image, max_size=2500)
-                time.sleep(1)
+                elif "429" in error_msg or "rate" in error_msg.lower():
+                    if is_free:
+                        wait = min(5 * (attempt + 1), 30)
+                        print(f"   ⏳ Rate limited [free] (attempt {attempt + 1}/{max_attempts}). Waiting {wait}s...")
+                        time.sleep(wait)
+                    else:
+                        # Paid model rate limited — try next key
+                        key_pool.mark_exhausted(key_idx, model, cooldown=30)
 
-            elif "onnection" in error_msg:
-                # Connection error — brief wait and retry
-                wait = 3 * (attempt + 1)
-                print(f"   Connection error (attempt {attempt + 1}). Waiting {wait}s...")
-                time.sleep(wait)
+                elif "413" in error_msg or "too large" in error_msg.lower():
+                    img_b64 = image_to_base64(page_image, max_size=2500)
+                    time.sleep(1)
 
-            elif attempt < max_attempts - 1:
-                print(f"   Error (page {page_number}, attempt {attempt + 1}): {error_msg[:120]}. Retrying...")
-                time.sleep(2)
-            else:
-                print(f"   Failed on page {page_number} after {max_attempts} attempts: {error_msg[:150]}")
-                return {
-                    "page_number": page_number,
-                    "text": ""
-                }
+                elif "onnection" in error_msg:
+                    wait = 3 * (attempt + 1)
+                    print(f"   Connection error (attempt {attempt + 1}). Waiting {wait}s...")
+                    time.sleep(wait)
 
+                elif attempt < max_attempts - 1:
+                    print(f"   Error [{model.split('/')[-1]}] (attempt {attempt + 1}): {error_msg[:100]}. Retrying...")
+                    time.sleep(2)
+                else:
+                    break  # Try next model
+
+    print(f"   ✗ Failed on page {page_number} — all models and keys exhausted")
     return {"page_number": page_number, "text": ""}
 
 
 def extract_text_openrouter(pdf_path: str, start_page: int = None, end_page: int = None) -> list[dict]:
     """
     Extract text from PDF pages using OpenRouter Vision API.
-    Processes pages ONE AT A TIME. No rate limit issues.
+    Uses multi-key pool with model cascade (qwen-7b → qwen-72b → gemma-free).
     """
-    or_client = OpenRouterClient()
+    key_pool = OpenRouterKeyPool()
 
     # Determine page range
     if start_page and end_page:
@@ -417,7 +522,6 @@ def extract_text_openrouter(pdf_path: str, start_page: int = None, end_page: int
 
     total = last_page - first_page + 1
     print(f"Pages to process: {first_page} to {last_page} ({total} pages)")
-    print(f"OCR Engine: OpenRouter Vision ({OPENROUTER_MODEL})")
     print(f"---")
 
     pages_text = []
@@ -441,7 +545,7 @@ def extract_text_openrouter(pdf_path: str, start_page: int = None, end_page: int
         w, h = img.size
         print(f"[Page {page_num}] Image: {w}x{h}px. Sending to OpenRouter...")
 
-        result = ocr_page_openrouter(or_client, img, page_num)
+        result = ocr_page_openrouter(key_pool, img, page_num)
         pages_text.append(result)
 
         text_len = len(result["text"])
@@ -451,14 +555,10 @@ def extract_text_openrouter(pdf_path: str, start_page: int = None, end_page: int
         del img
         gc.collect()
 
-        # Cooldown between requests — free models need longer gaps to avoid 429s
+        # Brief cooldown between requests (key rotation handles rate limits)
         if i < total - 1:
-            if ":free" in OPENROUTER_MODEL:
-                print(f"   [Free model cooldown 10s...]")
-                time.sleep(10)
-            else:
-                time.sleep(0.2)
-            
+            time.sleep(0.3)
+
         # Periodic save (checkpoint) every 10 pages in case of crash/memory issue
         if len(pages_text) % 10 == 0:
             checkpoint_path = f"{Path(pdf_path).stem}_checkpoint.json"
@@ -699,6 +799,250 @@ def extract_text_tesseract(pdf_path: str, start_page: int = None, end_page: int 
     
     print(f"---")
     print(f"OCR complete. Processed {len(pages_text)} pages.")
+    return pages_text
+
+
+# AI TEXT CORRECTION (for fixing Tesseract OCR errors)
+
+def fix_text_with_ai_groq(key_pool: GroqKeyPool, raw_text: str, page_number: int, retry_count: int = 3) -> str:
+    """
+    Send raw Tesseract OCR text to Groq (text-only, no images) to fix garbled words.
+    Much cheaper than vision OCR since we only send text.
+    """
+    if not raw_text.strip():
+        return raw_text
+
+    total_attempts = retry_count * key_pool.total_keys
+
+    for attempt in range(total_attempts):
+        client, key_idx = key_pool.get_client()
+        key_num = key_idx + 1
+
+        try:
+            response = client.chat.completions.create(
+                model=GROQ_TEXT_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": AI_TEXT_FIX_PROMPT + raw_text
+                    }
+                ],
+                temperature=0.0,
+                max_completion_tokens=4096,
+            )
+
+            fixed_text = response.choices[0].message.content.strip()
+            key_pool.advance()
+            return fixed_text
+
+        except Exception as e:
+            error_msg = str(e)
+            if "429" in error_msg or "rate_limit" in error_msg.lower():
+                key_pool.mark_rate_limited(key_idx, cooldown=60)
+                time.sleep(1)
+            elif attempt < total_attempts - 1:
+                print(f"   AI fix error (key #{key_num}, page {page_number}): {error_msg[:100]}. Retrying...")
+                time.sleep(3)
+            else:
+                print(f"   AI fix failed on page {page_number}, using raw text. Error: {error_msg[:150]}")
+                return raw_text  # Fallback to raw Tesseract text
+
+    return raw_text  # Fallback
+
+
+def fix_text_with_ai_openrouter(key_pool: OpenRouterKeyPool, raw_text: str, page_number: int) -> str:
+    """
+    Send raw Tesseract OCR text to OpenRouter (text-only) to fix garbled words.
+    Uses text-only models (much cheaper than vision models).
+    """
+    if not raw_text.strip():
+        return raw_text
+
+    for model_idx, model in enumerate(OPENROUTER_TEXT_MODELS):
+        is_free = ":free" in model
+        max_attempts = 8 if is_free else 4
+
+        for attempt in range(max_attempts):
+            client, key_idx = key_pool.get_client(model)
+
+            if client is None:
+                print(f"   All keys exhausted for {model.split('/')[-1]}. Trying next model...")
+                break
+
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": AI_TEXT_FIX_PROMPT + raw_text
+                        }
+                    ],
+                    temperature=0.0,
+                    max_tokens=4096,
+                    extra_headers={
+                        "HTTP-Referer": "https://github.com/DocuMorph",
+                        "X-Title": "DocuMorph"
+                    }
+                )
+
+                content = response.choices[0].message.content
+                if content is None:
+                    raise Exception("API returned no content")
+
+                fixed_text = content.strip()
+                key_pool.advance()
+                return fixed_text
+
+            except Exception as e:
+                error_msg = str(e)
+
+                if "404" in error_msg or "No endpoints" in error_msg:
+                    print(f"   Model {model.split('/')[-1]} not available. Trying next...")
+                    break
+
+                elif "402" in error_msg or "Payment Required" in error_msg:
+                    key_pool.mark_exhausted(key_idx, model, cooldown=99999)
+
+                elif "429" in error_msg or "rate" in error_msg.lower():
+                    if is_free:
+                        wait = min(5 * (attempt + 1), 30)
+                        print(f"   ⏳ Rate limited [free] (attempt {attempt + 1}/{max_attempts}). Waiting {wait}s...")
+                        time.sleep(wait)
+                    else:
+                        key_pool.mark_exhausted(key_idx, model, cooldown=30)
+
+                elif attempt < max_attempts - 1:
+                    print(f"   AI fix error [{model.split('/')[-1]}] (attempt {attempt + 1}): {error_msg[:100]}. Retrying...")
+                    time.sleep(2)
+                else:
+                    break
+
+    print(f"   AI fix failed on page {page_number}, using raw text.")
+    return raw_text  # Fallback
+
+
+def extract_text_tesseract_ai(pdf_path: str, start_page: int = None, end_page: int = None,
+                               ai_provider: str = "openrouter") -> list[dict]:
+    """
+    HYBRID ENGINE: Tesseract OCR + AI Text Correction.
+
+    Step 1: Extract raw text with Tesseract (fast, free, local)
+    Step 2: Send raw text to AI model to fix garbled/broken words
+    Step 3: Return corrected text
+
+    This is MUCH CHEAPER than vision OCR because we send text (~2KB)
+    instead of images (~3MB) to the API.
+    """
+    # Initialize AI key pool
+    if ai_provider == "groq":
+        groq_pool = GroqKeyPool()
+        openrouter_pool = None
+    else:
+        groq_pool = None
+        openrouter_pool = OpenRouterKeyPool()
+
+    # Try to initialize both for fallback
+    try:
+        if groq_pool is None:
+            groq_pool = GroqKeyPool()
+    except SystemExit:
+        groq_pool = None
+    try:
+        if openrouter_pool is None:
+            openrouter_pool = OpenRouterKeyPool()
+    except SystemExit:
+        openrouter_pool = None
+
+    # Determine page range
+    if start_page and end_page:
+        first_page = start_page
+        last_page = end_page
+    else:
+        total_pages = _get_page_count(pdf_path)
+        first_page = start_page or 1
+        last_page = end_page or total_pages
+        if last_page == 0:
+            last_page = first_page
+
+    total = last_page - first_page + 1
+    print(f"Pages to process: {first_page} to {last_page} ({total} pages)")
+    print(f"OCR Engine: Tesseract + AI Text Correction")
+    print(f"Step 1: Tesseract (local) → Step 2: AI fix ({ai_provider})")
+    print(f"---")
+
+    pages_text = []
+
+    for page_num in range(first_page, last_page + 1):
+        i = page_num - first_page
+        print(f"[Page {page_num}] Step 1: Tesseract OCR (DPI=300)...")
+
+        try:
+            img = _convert_single_page(pdf_path, page_num, dpi=300)
+        except Exception as e:
+            print(f"[Page {page_num}] ERROR converting: {str(e)[:150]}")
+            pages_text.append({"page_number": page_num, "text": ""})
+            continue
+
+        if img is None:
+            print(f"[Page {page_num}] WARNING: No image returned, skipping.")
+            pages_text.append({"page_number": page_num, "text": ""})
+            continue
+
+        # Step 1: Tesseract OCR (two-column)
+        raw_result = ocr_page_two_columns(img, page_num)
+        raw_text = raw_result["text"]
+        raw_len = len(raw_text)
+        print(f"[Page {page_num}] Tesseract extracted {raw_len} chars.")
+
+        # Free image memory
+        del img
+        gc.collect()
+
+        # Step 2: AI text correction
+        if raw_text.strip():
+            print(f"[Page {page_num}] Step 2: AI fixing garbled words...")
+
+            fixed_text = None
+
+            # Try primary provider first
+            if ai_provider == "groq" and groq_pool:
+                fixed_text = fix_text_with_ai_groq(groq_pool, raw_text, page_num)
+            elif ai_provider == "openrouter" and openrouter_pool:
+                fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
+
+            # If primary failed or returned raw text, try fallback
+            if fixed_text is None or fixed_text == raw_text:
+                if ai_provider == "groq" and openrouter_pool:
+                    print(f"[Page {page_num}] Groq failed, trying OpenRouter fallback...")
+                    fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
+                elif ai_provider == "openrouter" and groq_pool:
+                    print(f"[Page {page_num}] OpenRouter failed, trying Groq fallback...")
+                    fixed_text = fix_text_with_ai_groq(groq_pool, raw_text, page_num)
+
+            if fixed_text is None:
+                fixed_text = raw_text
+
+            fixed_len = len(fixed_text)
+            print(f"[Page {page_num}] AI corrected: {raw_len} → {fixed_len} chars. ({i + 1}/{total})")
+            pages_text.append({"page_number": page_num, "text": fixed_text})
+        else:
+            print(f"[Page {page_num}] Empty text, skipping AI fix. ({i + 1}/{total})")
+            pages_text.append({"page_number": page_num, "text": ""})
+
+        # Brief cooldown
+        if i < total - 1:
+            time.sleep(0.5)
+
+        # Checkpoint every 10 pages
+        if len(pages_text) % 10 == 0:
+            checkpoint_path = f"{Path(pdf_path).stem}_checkpoint.json"
+            with open(checkpoint_path, 'w', encoding='utf-8') as f:
+                json.dump({"processed_pages": len(pages_text), "pages": pages_text}, f, ensure_ascii=False)
+            print(f"   [Checkpoint saved: {checkpoint_path}]")
+
+    print(f"---")
+    print(f"Hybrid OCR complete. Processed {len(pages_text)} pages.")
     return pages_text
 
 
@@ -1006,9 +1350,9 @@ def main():
     )
     parser.add_argument(
         "--engine", "-e",
-        choices=["openrouter", "groq", "tesseract"],
+        choices=["openrouter", "groq", "tesseract", "tesseract+ai"],
         default="openrouter",
-        help="OCR engine to use (default: openrouter). 'openrouter' = OpenRouter Vision API (unlimited, no rate limits), 'groq' = Groq Vision API (rate limited), 'tesseract' = local Tesseract (lower accuracy)"
+        help="OCR engine to use (default: openrouter). 'openrouter' = OpenRouter Vision API, 'groq' = Groq Vision API, 'tesseract' = local Tesseract only, 'tesseract+ai' = Tesseract + AI text correction (cheapest & best hybrid)"
     )
     parser.add_argument(
         "--sample", "-s",
@@ -1042,9 +1386,10 @@ def main():
     output_path = args.output or f"{pdf_path.stem}_questions.json"
     
     engine_names = {
-        "openrouter": f"OpenRouter Vision ({OPENROUTER_MODEL})",
+        "openrouter": f"OpenRouter Vision (cascade: {' → '.join(m.split('/')[-1] for m in OPENROUTER_MODELS)})",
         "groq": "Groq Vision (Llama 4 Scout)",
-        "tesseract": "Tesseract OCR"
+        "tesseract": "Tesseract OCR",
+        "tesseract+ai": "Tesseract + AI Text Correction (Hybrid)"
     }
     engine_name = engine_names.get(args.engine, args.engine)
     
@@ -1066,6 +1411,8 @@ def main():
         pages_text = extract_text_openrouter(str(pdf_path), start_page, end_page)
     elif args.engine == "groq":
         pages_text = extract_text_groq(str(pdf_path), start_page, end_page)
+    elif args.engine == "tesseract+ai":
+        pages_text = extract_text_tesseract_ai(str(pdf_path), start_page, end_page)
     else:
         pages_text = extract_text_tesseract(str(pdf_path), start_page, end_page)
     
