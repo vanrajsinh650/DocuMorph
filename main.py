@@ -1046,6 +1046,81 @@ def extract_text_tesseract_ai(pdf_path: str, start_page: int = None, end_page: i
     return pages_text
 
 
+def enhance_pages_with_ai(pages_text: list[dict], ai_provider: str = "openrouter") -> list[dict]:
+    """
+    Takes an existing list of raw extracted pages (from Tesseract) and applies
+    AI text correction to each page individually. Returns a new list of corrected pages.
+    """
+    print(f"---")
+    print(f"Starting AI Enhancement on {len(pages_text)} pages...")
+    
+    # Initialize AI key pool
+    if ai_provider == "groq":
+        groq_pool = GroqKeyPool()
+        openrouter_pool = None
+    else:
+        groq_pool = None
+        openrouter_pool = OpenRouterKeyPool()
+
+    # Try to initialize both for fallback
+    try:
+        if groq_pool is None:
+            groq_pool = GroqKeyPool()
+    except SystemExit:
+        groq_pool = None
+    try:
+        if openrouter_pool is None:
+            openrouter_pool = OpenRouterKeyPool()
+    except SystemExit:
+        openrouter_pool = None
+
+    enhanced_pages = []
+    total = len(pages_text)
+
+    for i, page_data in enumerate(pages_text):
+        page_num = page_data.get("page_number", i + 1)
+        raw_text = page_data.get("text", "")
+        raw_len = len(raw_text)
+
+        if not raw_text.strip():
+            print(f"[Page {page_num}] Empty text, skipping AI fix. ({i + 1}/{total})")
+            enhanced_pages.append({"page_number": page_num, "text": ""})
+            continue
+
+        print(f"[Page {page_num}] AI fixing garbled words...")
+        fixed_text = None
+
+        # Try primary provider first
+        if ai_provider == "groq" and groq_pool:
+            fixed_text = fix_text_with_ai_groq(groq_pool, raw_text, page_num)
+        elif ai_provider == "openrouter" and openrouter_pool:
+            fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
+
+        # If primary failed or returned raw text, try fallback
+        if fixed_text is None or fixed_text == raw_text:
+            if ai_provider == "groq" and openrouter_pool:
+                print(f"[Page {page_num}] Groq failed, trying OpenRouter fallback...")
+                fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
+            elif ai_provider == "openrouter" and groq_pool:
+                print(f"[Page {page_num}] OpenRouter failed, trying Groq fallback...")
+                fixed_text = fix_text_with_ai_groq(groq_pool, raw_text, page_num)
+
+        if fixed_text is None:
+            fixed_text = raw_text
+
+        fixed_len = len(fixed_text)
+        print(f"[Page {page_num}] AI corrected: {raw_len} → {fixed_len} chars. ({i + 1}/{total})")
+        
+        enhanced_pages.append({"page_number": page_num, "text": fixed_text})
+        
+        # Brief cooldown
+        if i < total - 1:
+            time.sleep(0.5)
+
+    print(f"AI Enhancement complete.")
+    return enhanced_pages
+
+
 # QUESTION PARSING 
 
 def parse_questions(pages_text: list[dict]) -> list[dict]:
