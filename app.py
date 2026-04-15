@@ -11,10 +11,11 @@ from pathlib import Path
 # Import core functions from main.py
 from main import (
     GroqKeyPool,
-    OpenRouterClient,
+    OpenRouterKeyPool,
     extract_text_groq,
     extract_text_tesseract,
     extract_text_openrouter,
+    extract_text_tesseract_ai,
     _get_page_count,
     parse_questions,
     validate_questions,
@@ -301,6 +302,7 @@ def _run_extraction(tmp_path: str, engine: str, start_page: int, end_page: int,
             "openrouter": "OpenRouter (Qwen-2.5-VL)",
             "groq": "Groq Vision (Llama 4)",
             "tesseract": "Tesseract OCR",
+            "tesseract+ai": "Tesseract + AI Fix (Hybrid)",
         }.get(engine, engine)
 
         print(f"[1/3] Starting OCR — {engine_label}")
@@ -312,6 +314,8 @@ def _run_extraction(tmp_path: str, engine: str, start_page: int, end_page: int,
             new_pages = extract_text_openrouter(tmp_path, start_page, end_page)
         elif engine == "groq":
             new_pages = extract_text_groq(tmp_path, start_page, end_page)
+        elif engine == "tesseract+ai":
+            new_pages = extract_text_tesseract_ai(tmp_path, start_page, end_page, ai_provider="openrouter")
         else:
             new_pages = extract_text_tesseract(tmp_path, start_page, end_page)
 
@@ -419,12 +423,8 @@ if uploaded_file is not None:
 
     # ── Settings expander ──
     with st.expander("Settings", expanded=True):
-        engine = st.selectbox(
-            "OCR Engine",
-            ["openrouter", "groq", "tesseract"],
-            index=0,
-            help="OpenRouter (Qwen-2.5-VL) = best accuracy, no rate limits. Groq = fast but rate-limited. Tesseract = local, lower accuracy."
-        )
+        # Using cheap text correction hybrid pipeline
+        engine = "tesseract+ai"
 
         st.markdown("**Page Selection**")
         page_mode = st.radio(
