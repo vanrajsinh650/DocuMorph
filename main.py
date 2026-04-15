@@ -40,7 +40,7 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # OpenRouter TEXT-ONLY models for AI text correction (no vision needed, much cheaper)
 OPENROUTER_TEXT_MODELS = [
-    "qwen/qwen2.5-72b-instruct",            # 1st: extremely smart for formatting & Indic languages
+    "qwen/qwen-2.5-72b-instruct",           # 1st: extremely smart for formatting & Indic languages
     "google/gemma-3-27b-it:free",            # 2nd: FREE fallback
 ]
 

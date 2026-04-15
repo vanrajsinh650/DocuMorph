@@ -626,9 +626,21 @@ if "results" in st.session_state:
             print("starting ai enhancement")
             # 1. Take raw text
             raw_pages_text = st.session_state["raw_pages_text"]
+
+            # --- Live Log Setup ---
+            st.markdown("**AI Enhancement Log**")
+            ai_log_container = st.empty()
+
             # 2. Process with AI
             with st.spinner("AI is fixing Gujarati text... please wait..."):
-                enhanced_pages = enhance_pages_with_ai(raw_pages_text, ai_provider="openrouter")
+                logger = StreamlitLogCapture(ai_log_container)
+                old_stdout = sys.stdout
+                sys.stdout = logger
+                try:
+                    enhanced_pages = enhance_pages_with_ai(raw_pages_text, ai_provider="openrouter")
+                finally:
+                    sys.stdout = old_stdout
+                    
                 # 3. Save enhanced raw pages
                 st.session_state["raw_pages_text"] = enhanced_pages
                 # 4. Re-parse
