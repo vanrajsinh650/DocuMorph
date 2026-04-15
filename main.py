@@ -1222,17 +1222,19 @@ def normalize_option_labels(text: str) -> str:
         (D) → (2) or (12)
     """
     # (8) → (B) — very common OCR confusion
-    text = re.sub(r'\(8\)\s', '(B) ', text)
+    text = re.sub(r'\(\s*8\s*\)\s', '(B) ', text)
     # (3) → (B) — when appearing after (A) context  
-    text = re.sub(r'\(3\)\s', '(B) ', text)
+    text = re.sub(r'\(\s*3\s*\)\s', '(B) ', text)
     # (૦) → (C) — Gujarati zero confused with C
-    text = re.sub(r'\(૦\)\s', '(C) ', text)
+    text = re.sub(r'\(\s*૦\s*\)\s', '(C) ', text)
     # (0) → (C) — zero confused with C
-    text = re.sub(r'\(0\)\s', '(C) ', text)
+    text = re.sub(r'\(\s*0\s*\)\s', '(C) ', text)
+    # (€) → (C) — Euro symbol confused with C
+    text = re.sub(r'\(\s*€\s*\)\s*', '(C) ', text)
     # (12) → (D)
-    text = re.sub(r'\(12\)\s', '(D) ', text)
+    text = re.sub(r'\(\s*12\s*\)\s', '(D) ', text)
     # (2) → (D) — common confusion
-    text = re.sub(r'\(2\)\s', '(D) ', text)
+    text = re.sub(r'\(\s*2\s*\)\s', '(D) ', text)
     
     return text
 

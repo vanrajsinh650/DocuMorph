@@ -652,7 +652,11 @@ if "results" in st.session_state:
                     "full_log": full_log,
                 }
                 st.session_state["ai_enhanced"] = True
+                st.session_state["ai_log_msg"] = f"✅ AI successfully analyzed and corrected {len(enhanced_pages)} pages of text!"
                 st.rerun()
+                
+    if st.session_state.get("ai_log_msg"):
+        st.success(st.session_state["ai_log_msg"])
     # Stats row
     c1, c2, c3, c4 = st.columns(4)
     with c1:
