@@ -202,11 +202,14 @@ st.markdown("""
     .stProgress > div > div { background-color: #222222 !important; }
     .stProgress > div > div > div { background-color: #ffffff !important; }
 
-    .stTabs [data-baseweb="tab-list"] { background-color: transparent; gap: 0; }
+    .stTabs [data-baseweb="tab-list"] { background-color: transparent; gap: 2rem; }
     .stTabs [data-baseweb="tab"] {
         background-color: transparent !important;
         color: #666666 !important;
         border-bottom: 2px solid transparent;
+        padding-bottom: 0.5rem;
+        font-weight: 500;
+        font-size: 1rem;
     }
     .stTabs [aria-selected="true"] {
         color: #ffffff !important;
