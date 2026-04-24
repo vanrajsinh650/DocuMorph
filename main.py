@@ -11,6 +11,7 @@ import re
 import json
 import os
 import time
+import random
 import platform
 import argparse
 from pathlib import Path
@@ -46,6 +47,16 @@ OPENROUTER_TEXT_MODELS = [
 
 # Groq TEXT model for AI text correction
 GROQ_TEXT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+# Groq reliability tuning (reliability-first defaults)
+GROQ_MIN_REQUEST_INTERVAL_SECONDS = 0.35
+GROQ_BASE_429_COOLDOWN_SECONDS = 8
+GROQ_MAX_COOLDOWN_SECONDS = 300
+GROQ_PAGE_MAX_WAIT_SECONDS = 240
+GROQ_PAGE_MAX_ATTEMPTS = 24
+GROQ_TEXT_MAX_WAIT_SECONDS = 180
+GROQ_TEXT_MAX_ATTEMPTS = 20
+AI_CORRECTION_MIN_NONSPACE_CHARS = 20
 
 # The prompt that instructs the vision model to extract text accurately
 GROQ_OCR_PROMPT = """You are an expert OCR system for Gujarati language documents. Extract ALL text from this image EXACTLY as it appears in the document.
@@ -87,6 +98,46 @@ RAW OCR TEXT:
 
 # GROQ VISION OCR (Multi-Key Rotation)
 
+def _extract_retry_after_seconds(error_msg: str) -> int | None:
+    """Best-effort extraction of retry-after seconds from API error text."""
+    patterns = [
+        r"retry[-_\s]?after[^0-9]*(\d+)",
+        r"wait[^0-9]*(\d+)\s*(?:s|sec|seconds)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, error_msg, flags=re.IGNORECASE)
+        if match:
+            try:
+                return max(1, int(match.group(1)))
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _classify_groq_error(error_msg: str) -> str:
+    """Classify Groq error strings into retry/non-retry buckets."""
+    msg = error_msg.lower()
+
+    if "429" in msg or "rate_limit" in msg or ("rate" in msg and "limit" in msg):
+        return "rate_limit"
+    if "413" in msg or "too large" in msg or "request entity too large" in msg:
+        return "payload_too_large"
+    if "401" in msg or "403" in msg or "invalid api key" in msg or "unauthorized" in msg:
+        return "auth_error"
+    if re.search(r"\b5\d\d\b", msg) or "service unavailable" in msg or "internal server error" in msg:
+        return "server_error"
+    if "timeout" in msg or "timed out" in msg or "connection" in msg or "temporarily unavailable" in msg:
+        return "network_error"
+    return "fatal"
+
+
+def should_skip_ai_correction(raw_text: str, min_nonspace_chars: int = AI_CORRECTION_MIN_NONSPACE_CHARS) -> bool:
+    """Skip expensive AI correction for near-empty OCR output."""
+    if not raw_text:
+        return True
+    meaningful_chars = len(re.sub(r"\s+", "", raw_text))
+    return meaningful_chars < min_nonspace_chars
+
 class GroqKeyPool:
     """
     Manages multiple Groq API keys with round-robin rotation and auto-fallback.
@@ -100,17 +151,37 @@ class GroqKeyPool:
         GROQ_API_KEY=key
     """
 
-    def __init__(self):
-        from groq import Groq
-        self._Groq = Groq
+    def __init__(self, min_request_interval: float = GROQ_MIN_REQUEST_INTERVAL_SECONDS):
+        self.available = False
         self.keys = self._load_keys()
-        self.clients = [Groq(api_key=k) for k in self.keys]
+        self.clients = []
         self.current_index = 0
         self.total_keys = len(self.keys)
-        # Track which keys are temporarily exhausted (rate limited)
-        self.exhausted_until = [0.0] * self.total_keys
-        
-        print(f"Loaded {self.total_keys} Groq API key(s)")
+        self.min_request_interval = max(0.0, float(min_request_interval))
+        self.global_next_request_at = 0.0
+
+        # Per-key adaptive state
+        self.next_available_at = [0.0] * self.total_keys
+        self.consecutive_429 = [0] * self.total_keys
+        self.last_success_at = [0.0] * self.total_keys
+
+        if not self.keys:
+            print("⚠ No Groq API keys found. Continuing with raw OCR text fallback.")
+            return
+
+        try:
+            from groq import Groq
+            self.clients = [Groq(api_key=k) for k in self.keys]
+            self.available = True
+            print(f"Loaded {self.total_keys} Groq API key(s)")
+        except Exception as e:
+            print(f"⚠ Could not initialize Groq client ({str(e)[:120]}). Continuing without Groq correction.")
+            self.clients = []
+            self.available = False
+            self.total_keys = 0
+            self.next_available_at = []
+            self.consecutive_429 = []
+            self.last_success_at = []
     
     def _load_keys(self) -> list[str]:
         """Load all Groq API keys from Streamlit secrets, environment, or .env file."""
@@ -163,15 +234,6 @@ class GroqKeyPool:
             single_key = env_vars.get("GROQ_API_KEY", "")
             if single_key and single_key != "your_groq_api_key_here":
                 keys.append(single_key)
-        
-        if not keys:
-            print("Error: No Groq API keys found.")
-            print("Add keys to .env file:")
-            print("GROQ_API_KEY_1=your_first_key")
-            print("GROQ_API_KEY_2=your_second_key")
-            print("GROQ_API_KEY_3=your_third_key")
-            print("Get free keys at: https://console.groq.com/")
-            sys.exit(1)
         
         return keys
     
