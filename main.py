@@ -40,9 +40,10 @@ OPENROUTER_MODELS = [
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # OpenRouter TEXT-ONLY models for AI text correction (no vision needed, much cheaper)
+OPENROUTER_TEXT_FALLBACK_MODEL = "google/gemma-3-27b-it:free"
 OPENROUTER_TEXT_MODELS = [
-    "qwen/qwen-2.5-72b-instruct",           # 1st: extremely smart for formatting & Indic languages
-    "google/gemma-3-27b-it:free",            # 2nd: FREE fallback
+    "qwen/qwen-2.5-72b-instruct",           # primary text-fix model
+    OPENROUTER_TEXT_FALLBACK_MODEL,          # FREE fallback model
 ]
 
 # Groq TEXT model for AI text correction
@@ -50,6 +51,8 @@ GROQ_TEXT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 # Groq reliability tuning (reliability-first defaults)
 GROQ_MIN_REQUEST_INTERVAL_SECONDS = 0.35
+GROQ_MIN_REQUEST_INTERVAL_FLOOR_SECONDS = 0.08
+GROQ_MAX_ACTIVE_KEYS = 13
 GROQ_BASE_429_COOLDOWN_SECONDS = 8
 GROQ_MAX_COOLDOWN_SECONDS = 300
 GROQ_PAGE_MAX_WAIT_SECONDS = 240
@@ -157,7 +160,14 @@ class GroqKeyPool:
         self.clients = []
         self.current_index = 0
         self.total_keys = len(self.keys)
-        self.min_request_interval = max(0.0, float(min_request_interval))
+        requested_interval = max(0.0, float(min_request_interval))
+        if requested_interval > 0:
+            self.min_request_interval = max(
+                GROQ_MIN_REQUEST_INTERVAL_FLOOR_SECONDS,
+                requested_interval / max(1, self.total_keys),
+            )
+        else:
+            self.min_request_interval = 0.0
         self.global_next_request_at = 0.0
 
         # Per-key adaptive state
@@ -173,7 +183,10 @@ class GroqKeyPool:
             from groq import Groq
             self.clients = [Groq(api_key=k) for k in self.keys]
             self.available = True
-            print(f"Loaded {self.total_keys} Groq API key(s)")
+            print(
+                f"Loaded {self.total_keys} Groq API key(s) "
+                f"(request pacing: {self.min_request_interval:.2f}s)"
+            )
         except Exception as e:
             print(f"⚠ Could not initialize Groq client ({str(e)[:120]}). Continuing without Groq correction.")
             self.clients = []
@@ -234,36 +247,24 @@ class GroqKeyPool:
             single_key = env_vars.get("GROQ_API_KEY", "")
             if single_key and single_key != "your_groq_api_key_here":
                 keys.append(single_key)
-        
-        return keys
-    
-    def get_client(self):
-        """Get the current active Groq client (round-robin with fallback)."""
-        now = time.time()
-        
-        # Try to find a non-exhausted key
-        for _ in range(self.total_keys):
-            if now >= self.exhausted_until[self.current_index]:
-                return self.clients[self.current_index], self.current_index
-            # This key is still rate-limited, try next
-            self.current_index = (self.current_index + 1) % self.total_keys
-        
-        # All keys exhausted — wait for the one that recovers soonest
-        soonest = min(self.exhausted_until)
-        wait_time = max(0, soonest - now)
-        if wait_time > 0:
-            print(f"   ⏳ All {self.total_keys} keys rate-limited. Waiting {wait_time:.0f}s...")
-            time.sleep(wait_time + 1)
-        
-        return self.clients[self.current_index], self.current_index
-    
-    def mark_rate_limited(self, key_index: int, cooldown: int = 60):
-        """Mark a key as rate-limited for a cooldown period."""
-        self.exhausted_until[key_index] = time.time() + cooldown
-        key_num = key_index + 1
-        print(f"Key #{key_num} rate-limited, cooling down {cooldown}s. Switching to next key...")
-        # Rotate to next key
-        self.current_index = (key_index + 1) % self.total_keys
+
+        # De-duplicate while preserving order
+        unique_keys = []
+        seen = set()
+        for k in keys:
+            key = (k or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique_keys.append(key)
+
+        if len(unique_keys) > GROQ_MAX_ACTIVE_KEYS:
+            print(
+                f"ℹ Found {len(unique_keys)} Groq keys. "
+                f"Using first {GROQ_MAX_ACTIVE_KEYS} keys for stable rotation."
+            )
+
+        return unique_keys[:GROQ_MAX_ACTIVE_KEYS]
     
     def wait_for_global_slot(self):
         """Apply global pacing between requests to avoid bursty 429 spikes."""
@@ -1055,6 +1056,12 @@ def extract_text_tesseract_groq_dual(pdf_path: str, start_page: int = None, end_
         (raw_pages_text, fixed_pages_text)
     """
     groq_pool = GroqKeyPool()
+    try:
+        openrouter_pool = OpenRouterKeyPool()
+        print(f"✓ OpenRouter fallback model ready: {OPENROUTER_TEXT_FALLBACK_MODEL}")
+    except SystemExit:
+        openrouter_pool = None
+        print("⚠ OpenRouter fallback unavailable. Groq failures will use raw text.")
 
     # Determine page range
     if start_page and end_page:
@@ -1107,12 +1114,26 @@ def extract_text_tesseract_groq_dual(pdf_path: str, start_page: int = None, end_
         if should_skip_ai_correction(raw_text):
             print(f"[Page {page_num}] Step 2/2: Skipping Groq fix (near-empty text).")
         elif not groq_pool.available:
-            if not groq_fallback_used:
-                print("⚠ Groq unavailable. Continuing with raw Tesseract text.")
+            if openrouter_pool:
+                print(
+                    f"[Page {page_num}] Groq unavailable, trying OpenRouter single-model fallback "
+                    f"({OPENROUTER_TEXT_FALLBACK_MODEL})..."
+                )
+                fixed_text = fix_text_with_openrouter_fallback_model(openrouter_pool, raw_text, page_num)
+            elif not groq_fallback_used:
+                print("⚠ Groq unavailable and no OpenRouter fallback. Continuing with raw Tesseract text.")
                 groq_fallback_used = True
         else:
             print(f"[Page {page_num}] Step 2/2: Groq correcting Gujarati text...")
             fixed_text = fix_text_with_ai_groq_robust(groq_pool, raw_text, page_num)
+            if fixed_text == raw_text and openrouter_pool:
+                print(
+                    f"[Page {page_num}] Groq returned raw text, trying OpenRouter single-model fallback "
+                    f"({OPENROUTER_TEXT_FALLBACK_MODEL})..."
+                )
+                fallback_text = fix_text_with_openrouter_fallback_model(openrouter_pool, raw_text, page_num)
+                if fallback_text:
+                    fixed_text = fallback_text
 
         fixed_pages_text.append({"page_number": page_num, "text": fixed_text})
         fixed_len = len(fixed_text)
@@ -1271,7 +1292,12 @@ def fix_text_with_ai_groq_robust(
     return raw_text
 
 
-def fix_text_with_ai_openrouter(key_pool: OpenRouterKeyPool, raw_text: str, page_number: int) -> str:
+def fix_text_with_ai_openrouter(
+    key_pool: OpenRouterKeyPool,
+    raw_text: str,
+    page_number: int,
+    models: list[str] | None = None,
+) -> str:
     """
     Send raw Tesseract OCR text to OpenRouter (text-only) to fix garbled words.
     Uses text-only models (much cheaper than vision models).
@@ -1279,7 +1305,9 @@ def fix_text_with_ai_openrouter(key_pool: OpenRouterKeyPool, raw_text: str, page
     if not raw_text.strip():
         return raw_text
 
-    for model_idx, model in enumerate(OPENROUTER_TEXT_MODELS):
+    models_to_try = models or OPENROUTER_TEXT_MODELS
+
+    for model_idx, model in enumerate(models_to_try):
         is_free = ":free" in model
         max_attempts = 8 if is_free else 4
 
@@ -1343,6 +1371,20 @@ def fix_text_with_ai_openrouter(key_pool: OpenRouterKeyPool, raw_text: str, page
     return raw_text  # Fallback
 
 
+def fix_text_with_openrouter_fallback_model(
+    key_pool: OpenRouterKeyPool,
+    raw_text: str,
+    page_number: int,
+) -> str:
+    """Run OpenRouter fallback using only one deterministic text model."""
+    return fix_text_with_ai_openrouter(
+        key_pool,
+        raw_text,
+        page_number,
+        models=[OPENROUTER_TEXT_FALLBACK_MODEL],
+    )
+
+
 def extract_text_tesseract_ai(pdf_path: str, start_page: int = None, end_page: int = None,
                                ai_provider: str = "openrouter") -> list[dict]:
     """
@@ -1361,7 +1403,10 @@ def extract_text_tesseract_ai(pdf_path: str, start_page: int = None, end_page: i
         openrouter_pool = None
     else:
         groq_pool = None
-        openrouter_pool = OpenRouterKeyPool()
+        try:
+            openrouter_pool = OpenRouterKeyPool()
+        except SystemExit:
+            openrouter_pool = None
 
     # Try to initialize both for fallback
     try:
@@ -1435,8 +1480,11 @@ def extract_text_tesseract_ai(pdf_path: str, start_page: int = None, end_page: i
             # If primary failed or returned raw text, try fallback
             if fixed_text is None or fixed_text == raw_text:
                 if ai_provider == "groq" and openrouter_pool:
-                    print(f"[Page {page_num}] Groq failed, trying OpenRouter fallback...")
-                    fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
+                    print(
+                        f"[Page {page_num}] Groq failed, trying OpenRouter single-model fallback "
+                        f"({OPENROUTER_TEXT_FALLBACK_MODEL})..."
+                    )
+                    fixed_text = fix_text_with_openrouter_fallback_model(openrouter_pool, raw_text, page_num)
                 elif ai_provider == "openrouter" and groq_pool:
                     print(f"[Page {page_num}] OpenRouter failed, trying Groq fallback...")
                     fixed_text = fix_text_with_ai_groq_robust(groq_pool, raw_text, page_num)
@@ -1481,7 +1529,10 @@ def enhance_pages_with_ai(pages_text: list[dict], ai_provider: str = "openrouter
         openrouter_pool = None
     else:
         groq_pool = None
-        openrouter_pool = OpenRouterKeyPool()
+        try:
+            openrouter_pool = OpenRouterKeyPool()
+        except SystemExit:
+            openrouter_pool = None
 
     # Try to initialize both for fallback
     try:
@@ -1520,8 +1571,11 @@ def enhance_pages_with_ai(pages_text: list[dict], ai_provider: str = "openrouter
         # If primary failed or returned raw text, try fallback
         if fixed_text is None or fixed_text == raw_text:
             if ai_provider == "groq" and openrouter_pool:
-                print(f"[Page {page_num}] Groq failed, trying OpenRouter fallback...")
-                fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
+                print(
+                    f"[Page {page_num}] Groq failed, trying OpenRouter single-model fallback "
+                    f"({OPENROUTER_TEXT_FALLBACK_MODEL})..."
+                )
+                fixed_text = fix_text_with_openrouter_fallback_model(openrouter_pool, raw_text, page_num)
             elif ai_provider == "openrouter" and groq_pool:
                 print(f"[Page {page_num}] OpenRouter failed, trying Groq fallback...")
                 fixed_text = fix_text_with_ai_groq_robust(groq_pool, raw_text, page_num)
@@ -1562,6 +1616,15 @@ def enhance_pages_with_ai_robust(
     openrouter_pool = None
     if ai_provider == "groq":
         groq_pool = groq_pool or GroqKeyPool()
+        try:
+            openrouter_pool = OpenRouterKeyPool()
+            print(
+                f"✓ OpenRouter single-model fallback ready: "
+                f"{OPENROUTER_TEXT_FALLBACK_MODEL}"
+            )
+        except SystemExit:
+            openrouter_pool = None
+            print("⚠ OpenRouter fallback unavailable. Groq failures will keep raw text.")
     else:
         try:
             openrouter_pool = OpenRouterKeyPool()
@@ -1600,8 +1663,11 @@ def enhance_pages_with_ai_robust(
         # Optional fallback to whichever pool is available
         if fixed_text is None or fixed_text == raw_text:
             if ai_provider == "groq" and openrouter_pool:
-                print(f"[Page {page_num}] Groq failed, trying OpenRouter fallback...")
-                fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
+                print(
+                    f"[Page {page_num}] Groq failed, trying OpenRouter single-model fallback "
+                    f"({OPENROUTER_TEXT_FALLBACK_MODEL})..."
+                )
+                fixed_text = fix_text_with_openrouter_fallback_model(openrouter_pool, raw_text, page_num)
             elif ai_provider == "openrouter" and groq_pool and groq_pool.available:
                 print(f"[Page {page_num}] OpenRouter failed, trying Groq fallback...")
                 fixed_text = fix_text_with_ai_groq_robust(groq_pool, raw_text, page_num)
