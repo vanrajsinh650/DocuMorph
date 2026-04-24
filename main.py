@@ -1542,6 +1542,100 @@ def enhance_pages_with_ai(pages_text: list[dict], ai_provider: str = "openrouter
     return enhanced_pages
 
 
+def enhance_pages_with_ai_robust(
+    pages_text: list[dict],
+    ai_provider: str = "groq",
+    checkpoint_path: str | None = None,
+    checkpoint_every: int = 10,
+    groq_pool: GroqKeyPool | None = None,
+) -> list[dict]:
+    """
+    Reliability-first page enhancement:
+    - skips near-empty pages
+    - uses robust Groq correction
+    - checkpoints progress for long runs
+    - never crashes app flow on missing keys
+    """
+    print(f"---")
+    print(f"Starting robust AI enhancement on {len(pages_text)} pages...")
+
+    openrouter_pool = None
+    if ai_provider == "groq":
+        groq_pool = groq_pool or GroqKeyPool()
+    else:
+        try:
+            openrouter_pool = OpenRouterKeyPool()
+        except SystemExit:
+            openrouter_pool = None
+            print("⚠ OpenRouter keys unavailable. Falling back to raw text.")
+        groq_pool = groq_pool or GroqKeyPool()
+
+    enhanced_pages = []
+    total = len(pages_text)
+    corrected_count = 0
+    fallback_count = 0
+
+    for i, page_data in enumerate(pages_text):
+        page_num = page_data.get("page_number", i + 1)
+        raw_text = page_data.get("text", "")
+        raw_len = len(raw_text)
+
+        if should_skip_ai_correction(raw_text):
+            print(f"[Page {page_num}] Skipping AI fix (empty/near-empty). ({i + 1}/{total})")
+            enhanced_pages.append({"page_number": page_num, "text": raw_text or ""})
+            continue
+
+        fixed_text = None
+        print(f"[Page {page_num}] AI fixing garbled words...")
+
+        if ai_provider == "groq":
+            if groq_pool and groq_pool.available:
+                fixed_text = fix_text_with_ai_groq_robust(groq_pool, raw_text, page_num)
+            else:
+                fallback_count += 1
+                fixed_text = raw_text
+        elif ai_provider == "openrouter" and openrouter_pool:
+            fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
+
+        # Optional fallback to whichever pool is available
+        if fixed_text is None or fixed_text == raw_text:
+            if ai_provider == "groq" and openrouter_pool:
+                print(f"[Page {page_num}] Groq failed, trying OpenRouter fallback...")
+                fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
+            elif ai_provider == "openrouter" and groq_pool and groq_pool.available:
+                print(f"[Page {page_num}] OpenRouter failed, trying Groq fallback...")
+                fixed_text = fix_text_with_ai_groq_robust(groq_pool, raw_text, page_num)
+
+        if fixed_text is None:
+            fixed_text = raw_text
+            fallback_count += 1
+
+        if fixed_text != raw_text:
+            corrected_count += 1
+
+        fixed_len = len(fixed_text)
+        print(f"[Page {page_num}] AI corrected: {raw_len} â†’ {fixed_len} chars. ({i + 1}/{total})")
+        enhanced_pages.append({"page_number": page_num, "text": fixed_text})
+
+        if i < total - 1:
+            time.sleep(0.2)
+
+        if checkpoint_path and checkpoint_every > 0 and len(enhanced_pages) % checkpoint_every == 0:
+            with open(checkpoint_path, 'w', encoding='utf-8') as f:
+                json.dump(
+                    {"processed_pages": len(enhanced_pages), "pages": enhanced_pages},
+                    f,
+                    ensure_ascii=False
+                )
+            print(f"   [AI checkpoint saved: {checkpoint_path}]")
+
+    print(
+        f"Robust AI enhancement complete. Corrected pages: {corrected_count}/{total}, "
+        f"fallback pages: {fallback_count}."
+    )
+    return enhanced_pages
+
+
 # QUESTION PARSING 
 
 def parse_questions(pages_text: list[dict]) -> list[dict]:
@@ -1848,9 +1942,9 @@ def main():
     )
     parser.add_argument(
         "--engine", "-e",
-        choices=["openrouter", "groq", "tesseract", "tesseract+ai"],
+        choices=["openrouter", "groq", "tesseract", "tesseract+ai", "tesseract+groq"],
         default="openrouter",
-        help="OCR engine to use (default: openrouter). 'openrouter' = OpenRouter Vision API, 'groq' = Groq Vision API, 'tesseract' = local Tesseract only, 'tesseract+ai' = Tesseract + AI text correction (cheapest & best hybrid)"
+        help="OCR engine to use (default: openrouter). 'openrouter' = OpenRouter Vision API, 'groq' = Groq Vision API, 'tesseract' = local Tesseract only, 'tesseract+ai' = Tesseract + AI text correction, 'tesseract+groq' = Tesseract + robust Groq correction with dual JSON output"
     )
     parser.add_argument(
         "--sample", "-s",
@@ -1881,13 +1975,17 @@ def main():
         end_page = int(parts[1]) if len(parts) > 1 else start_page
     
     # Default output path
-    output_path = args.output or f"{pdf_path.stem}_questions.json"
+    if args.engine == "tesseract+groq":
+        output_path = args.output or f"{pdf_path.stem}_questions_fixed.json"
+    else:
+        output_path = args.output or f"{pdf_path.stem}_questions.json"
     
     engine_names = {
         "openrouter": f"OpenRouter Vision (cascade: {' → '.join(m.split('/')[-1] for m in OPENROUTER_MODELS)})",
         "groq": "Groq Vision (Llama 4 Scout)",
         "tesseract": "Tesseract OCR",
-        "tesseract+ai": "Tesseract + AI Text Correction (Hybrid)"
+        "tesseract+ai": "Tesseract + AI Text Correction (Hybrid)",
+        "tesseract+groq": "Tesseract + Robust Groq Correction (Dual Output)"
     }
     engine_name = engine_names.get(args.engine, args.engine)
     
@@ -1905,12 +2003,15 @@ def main():
     # Step 1: OCR text extraction
     print(f"\nStep 1: OCR Text Extraction ({engine_name})...")
     
+    raw_pages_text = None
     if args.engine == "openrouter":
         pages_text = extract_text_openrouter(str(pdf_path), start_page, end_page)
     elif args.engine == "groq":
         pages_text = extract_text_groq(str(pdf_path), start_page, end_page)
     elif args.engine == "tesseract+ai":
         pages_text = extract_text_tesseract_ai(str(pdf_path), start_page, end_page)
+    elif args.engine == "tesseract+groq":
+        raw_pages_text, pages_text = extract_text_tesseract_groq_dual(str(pdf_path), start_page, end_page)
     else:
         pages_text = extract_text_tesseract(str(pdf_path), start_page, end_page)
     
@@ -1920,33 +2021,56 @@ def main():
     
     # Optionally save raw text
     if args.save_raw:
-        raw_path = f"{pdf_path.stem}_raw_ocr.txt"
-        save_raw_text(pages_text, raw_path)
-    
+        if args.engine == "tesseract+groq" and raw_pages_text is not None:
+            raw_text_path = f"{pdf_path.stem}_raw_ocr.txt"
+            fixed_text_path = f"{pdf_path.stem}_fixed_ocr.txt"
+            save_raw_text(raw_pages_text, raw_text_path)
+            save_raw_text(pages_text, fixed_text_path)
+        else:
+            raw_text_path = f"{pdf_path.stem}_raw_ocr.txt"
+            save_raw_text(pages_text, raw_text_path)
+
     # Step 2: Parse questions
     print(f"\nStep 2: Parsing questions from OCR text...")
-    questions = parse_questions(pages_text)
-    
+    if args.engine == "tesseract+groq" and raw_pages_text is not None:
+        raw_questions = parse_questions(raw_pages_text)
+        questions = parse_questions(pages_text)
+        if not questions and raw_questions:
+            print("⚠ Groq-corrected parse is empty. Falling back to raw parsed questions.")
+            questions = raw_questions
+    else:
+        raw_questions = None
+        questions = parse_questions(pages_text)
+
     if not questions:
         print("No questions found. Saving raw OCR text for inspection...")
         raw_path = f"{pdf_path.stem}_raw_ocr.txt"
         save_raw_text(pages_text, raw_path)
         print(f"Check {raw_path} to see what OCR extracted.")
         sys.exit(1)
-    
+
     # Step 3: Validate
     print(f"\nStep 3: Validating...")
     validate_questions(questions)
-    
+
     # Step 4: Show sample
     print_sample(questions, args.sample)
-    
+
     # Step 5: Save JSON
     print(f"\nStep 4: Saving JSON...")
-    save_json(questions, output_path)
-    
-    print(f"\nDone! {len(questions)} questions extracted successfully.")
-    print(f"Output: {output_path}")
+    if args.engine == "tesseract+groq":
+        raw_json_path = f"{pdf_path.stem}_questions_raw.json"
+        if raw_questions is None:
+            raw_questions = parse_questions(raw_pages_text or [])
+        save_json(raw_questions, raw_json_path)
+        save_json(questions, output_path)
+        print(f"\nDone! {len(questions)} questions extracted successfully.")
+        print(f"Raw Output:   {raw_json_path}")
+        print(f"Fixed Output: {output_path}")
+    else:
+        save_json(questions, output_path)
+        print(f"\nDone! {len(questions)} questions extracted successfully.")
+        print(f"Output: {output_path}")
 
 
 if __name__ == "__main__":
