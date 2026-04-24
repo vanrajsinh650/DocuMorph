@@ -265,9 +265,99 @@ class GroqKeyPool:
         # Rotate to next key
         self.current_index = (key_index + 1) % self.total_keys
     
+    def wait_for_global_slot(self):
+        """Apply global pacing between requests to avoid bursty 429 spikes."""
+        if not self.available or self.min_request_interval <= 0:
+            return
+
+        now = time.time()
+        if now < self.global_next_request_at:
+            time.sleep(self.global_next_request_at - now)
+
+        self.global_next_request_at = time.time() + self.min_request_interval
+
+    def get_client(self, max_wait_seconds: float = GROQ_PAGE_MAX_WAIT_SECONDS):
+        """
+        Get the next available Groq client.
+        If all keys are cooling down, wait until the earliest recovery (bounded by max_wait_seconds).
+        Returns (client, key_index, waited_seconds) or (None, -1, waited_seconds).
+        """
+        if not self.available or self.total_keys == 0:
+            return None, -1, 0.0
+
+        waited = 0.0
+        while waited <= max_wait_seconds:
+            now = time.time()
+
+            # Try to find a non-cooled-down key in round-robin order.
+            for _ in range(self.total_keys):
+                idx = self.current_index
+                if now >= self.next_available_at[idx]:
+                    return self.clients[idx], idx, waited
+                self.current_index = (self.current_index + 1) % self.total_keys
+
+            # All keys are cooling down; wait until earliest recovery.
+            soonest = min(self.next_available_at)
+            wait_time = max(0.0, soonest - now)
+            if wait_time <= 0:
+                continue
+
+            if waited + wait_time > max_wait_seconds:
+                return None, -1, waited
+
+            print(f"   ⏳ All {self.total_keys} Groq keys cooling down. Waiting {wait_time:.1f}s...")
+            sleep_for = min(wait_time + 0.05, max_wait_seconds - waited)
+            time.sleep(sleep_for)
+            waited += sleep_for
+
+        return None, -1, waited
+
+    def _compute_429_cooldown(self, key_index: int, error_msg: str = "") -> float:
+        retry_after = _extract_retry_after_seconds(error_msg)
+        if retry_after:
+            base = float(retry_after)
+        else:
+            streak = max(1, self.consecutive_429[key_index])
+            base = GROQ_BASE_429_COOLDOWN_SECONDS * (2 ** min(streak - 1, 5))
+        jitter = random.uniform(0.4, 1.8)
+        return min(float(GROQ_MAX_COOLDOWN_SECONDS), base + jitter)
+
+    def mark_rate_limited(self, key_index: int, error_msg: str = "", cooldown: float | None = None) -> float:
+        """Mark key as rate-limited with adaptive cooldown."""
+        if key_index < 0 or key_index >= self.total_keys:
+            return 0.0
+
+        self.consecutive_429[key_index] += 1
+        cooldown_seconds = float(cooldown) if cooldown is not None else self._compute_429_cooldown(key_index, error_msg)
+        self.next_available_at[key_index] = time.time() + cooldown_seconds
+        self.current_index = (key_index + 1) % self.total_keys
+        return cooldown_seconds
+
+    def mark_transient_error(self, key_index: int, cooldown: float = 8.0):
+        """Temporarily cool a key on retryable server/network errors."""
+        if key_index < 0 or key_index >= self.total_keys:
+            return
+        until = time.time() + max(0.5, float(cooldown))
+        self.next_available_at[key_index] = max(self.next_available_at[key_index], until)
+        self.current_index = (key_index + 1) % self.total_keys
+
+    def mark_auth_error(self, key_index: int):
+        """Sideline an unauthorized key for a long cooldown."""
+        self.mark_transient_error(key_index, cooldown=3600.0)
+
+    def mark_success(self, key_index: int):
+        """Reset backoff state on success."""
+        if key_index < 0 or key_index >= self.total_keys:
+            return
+        now = time.time()
+        self.consecutive_429[key_index] = 0
+        self.last_success_at[key_index] = now
+        self.next_available_at[key_index] = min(self.next_available_at[key_index], now)
+
     def advance(self):
         """Move to the next key in round-robin (call after each successful request)."""
-        self.current_index = (self.current_index + 1) % self.total_keys
+        if self.total_keys:
+            self.current_index = (self.current_index + 1) % self.total_keys
 
 
 def image_to_base64(image: Image.Image, max_size: int = 3800) -> str:
@@ -350,6 +440,99 @@ def ocr_page_groq(key_pool: GroqKeyPool, page_image: Image.Image, page_number: i
                         "text": ""
                     }
     
+    return {"page_number": page_number, "text": ""}
+
+
+def ocr_page_groq_robust(
+    key_pool: GroqKeyPool,
+    page_image: Image.Image,
+    page_number: int,
+    retry_count: int = 3,
+    max_wait_seconds: int = GROQ_PAGE_MAX_WAIT_SECONDS,
+) -> dict:
+    """
+    Reliability-first Groq vision OCR with adaptive per-key cooldown and bounded retries.
+    """
+    if not key_pool.available:
+        return {"page_number": page_number, "text": ""}
+
+    img_b64 = image_to_base64(page_image)
+    total_attempts = min(
+        GROQ_PAGE_MAX_ATTEMPTS,
+        max(4, retry_count * max(1, key_pool.total_keys))
+    )
+    started_at = time.time()
+    resized_for_limit = False
+    attempts = 0
+
+    while attempts < total_attempts and (time.time() - started_at) <= max_wait_seconds:
+        remaining_wait = max(1.0, max_wait_seconds - (time.time() - started_at))
+        client, key_idx, _ = key_pool.get_client(max_wait_seconds=remaining_wait)
+        if client is None:
+            print(f"[Page {page_number}] Groq wait ceiling reached. Returning empty OCR text.")
+            break
+
+        attempts += 1
+        key_num = key_idx + 1
+        key_pool.wait_for_global_slot()
+
+        try:
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": GROQ_OCR_PROMPT},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                            }
+                        ]
+                    }
+                ],
+                temperature=0.0,
+                max_completion_tokens=4096,
+            )
+
+            content = response.choices[0].message.content
+            text = (content or "").strip()
+            key_pool.mark_success(key_idx)
+            key_pool.advance()
+            return {"page_number": page_number, "text": text}
+
+        except Exception as e:
+            error_msg = str(e)
+            category = _classify_groq_error(error_msg)
+
+            if category == "rate_limit":
+                cooldown = key_pool.mark_rate_limited(key_idx, error_msg=error_msg)
+                print(
+                    f"[Page {page_number}] 429 on key #{key_num}; cooldown {cooldown:.1f}s "
+                    f"(attempt {attempts}/{total_attempts})."
+                )
+            elif category == "payload_too_large":
+                if not resized_for_limit:
+                    print(f"[Page {page_number}] Image too large, reducing size and retrying...")
+                    img_b64 = image_to_base64(page_image, max_size=2500)
+                    resized_for_limit = True
+                key_pool.mark_transient_error(key_idx, cooldown=2.0)
+            elif category in ("server_error", "network_error"):
+                cooldown = min(20.0, 2.0 + attempts * 2.0)
+                key_pool.mark_transient_error(key_idx, cooldown=cooldown)
+                print(
+                    f"[Page {page_number}] Transient Groq error on key #{key_num}; "
+                    f"cooldown {cooldown:.1f}s, retrying..."
+                )
+            elif category == "auth_error":
+                key_pool.mark_auth_error(key_idx)
+                print(f"[Page {page_number}] Auth error on key #{key_num}. Key sidelined.")
+            else:
+                key_pool.mark_transient_error(key_idx, cooldown=1.0)
+                print(f"[Page {page_number}] Non-retriable Groq error: {error_msg[:140]}")
+                break
+
+    print(f"[Page {page_number}] Groq OCR failed after {attempts} attempts.")
     return {"page_number": page_number, "text": ""}
 
 
@@ -716,7 +899,7 @@ def extract_text_groq(pdf_path: str, start_page: int = None, end_page: int = Non
         w, h = img.size
         print(f"[Page {page_num}] Image: {w}x{h}px. Sending to Groq...")
         
-        result = ocr_page_groq(key_pool, img, page_num)
+        result = ocr_page_groq_robust(key_pool, img, page_num)
         pages_text.append(result)
         
         text_len = len(result["text"])
@@ -910,6 +1093,88 @@ def fix_text_with_ai_groq(key_pool: GroqKeyPool, raw_text: str, page_number: int
                 return raw_text  # Fallback to raw Tesseract text
 
     return raw_text  # Fallback
+
+
+def fix_text_with_ai_groq_robust(
+    key_pool: GroqKeyPool,
+    raw_text: str,
+    page_number: int,
+    retry_count: int = 3,
+    max_wait_seconds: int = GROQ_TEXT_MAX_WAIT_SECONDS,
+) -> str:
+    """
+    Reliability-first Groq text correction with adaptive cooldown and bounded retries.
+    """
+    if not raw_text.strip() or should_skip_ai_correction(raw_text):
+        return raw_text
+
+    if not key_pool.available:
+        return raw_text
+
+    total_attempts = min(
+        GROQ_TEXT_MAX_ATTEMPTS,
+        max(3, retry_count * max(1, key_pool.total_keys))
+    )
+    started_at = time.time()
+    attempts = 0
+
+    while attempts < total_attempts and (time.time() - started_at) <= max_wait_seconds:
+        remaining_wait = max(1.0, max_wait_seconds - (time.time() - started_at))
+        client, key_idx, _ = key_pool.get_client(max_wait_seconds=remaining_wait)
+        if client is None:
+            print(f"[Page {page_number}] Groq correction wait ceiling reached. Using raw text.")
+            break
+
+        attempts += 1
+        key_num = key_idx + 1
+        key_pool.wait_for_global_slot()
+
+        try:
+            response = client.chat.completions.create(
+                model=GROQ_TEXT_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": AI_TEXT_FIX_PROMPT + raw_text
+                    }
+                ],
+                temperature=0.0,
+                max_completion_tokens=4096,
+            )
+
+            content = response.choices[0].message.content
+            fixed_text = (content or "").strip()
+            key_pool.mark_success(key_idx)
+            key_pool.advance()
+            return fixed_text if fixed_text else raw_text
+
+        except Exception as e:
+            error_msg = str(e)
+            category = _classify_groq_error(error_msg)
+
+            if category == "rate_limit":
+                cooldown = key_pool.mark_rate_limited(key_idx, error_msg=error_msg)
+                print(
+                    f"[Page {page_number}] 429 during Groq correction on key #{key_num}; "
+                    f"cooldown {cooldown:.1f}s (attempt {attempts}/{total_attempts})."
+                )
+            elif category in ("server_error", "network_error"):
+                cooldown = min(20.0, 2.0 + attempts * 2.0)
+                key_pool.mark_transient_error(key_idx, cooldown=cooldown)
+                print(
+                    f"[Page {page_number}] Transient Groq correction error on key #{key_num}; "
+                    f"cooldown {cooldown:.1f}s."
+                )
+            elif category == "auth_error":
+                key_pool.mark_auth_error(key_idx)
+                print(f"[Page {page_number}] Groq auth error on key #{key_num}. Key sidelined.")
+            else:
+                key_pool.mark_transient_error(key_idx, cooldown=1.0)
+                print(f"[Page {page_number}] Groq correction failed: {error_msg[:140]}")
+                break
+
+    print(f"[Page {page_number}] Groq correction failed after {attempts} attempts. Using raw text.")
+    return raw_text
 
 
 def fix_text_with_ai_openrouter(key_pool: OpenRouterKeyPool, raw_text: str, page_number: int) -> str:
