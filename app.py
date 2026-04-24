@@ -732,7 +732,7 @@ if "results" in st.session_state:
     st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
     # --- AI Enhancement Box ---
-    if False:
+    if False:  # Legacy manual enhancement flow (disabled)
         st.markdown("""
         <div style="background-color:#1e3a8a; padding: 1.5rem; border-radius: 8px; margin-bottom: 2rem; border-left: 4px solid #3b82f6;">
             <h3 style="margin-top: 0; color: #ffffff;">✨ Text Quality Looks Garbled?</h3>
