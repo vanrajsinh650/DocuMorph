@@ -384,7 +384,7 @@ def ocr_page_groq(key_pool: GroqKeyPool, page_image: Image.Image, page_number: i
     total_attempts = retry_count * key_pool.total_keys  # More attempts across all keys
     
     for attempt in range(total_attempts):
-        client, key_idx = key_pool.get_client()
+        client, key_idx, _ = key_pool.get_client()
         key_num = key_idx + 1
         
         try:
@@ -1154,7 +1154,7 @@ def fix_text_with_ai_groq(key_pool: GroqKeyPool, raw_text: str, page_number: int
     total_attempts = retry_count * key_pool.total_keys
 
     for attempt in range(total_attempts):
-        client, key_idx = key_pool.get_client()
+        client, key_idx, _ = key_pool.get_client()
         key_num = key_idx + 1
 
         try:

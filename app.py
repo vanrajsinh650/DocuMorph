@@ -1,26 +1,16 @@
 import streamlit as st
 import json
 import tempfile
-import os
 import sys
-import time
-import math
 import traceback
 from pathlib import Path
 
 # Import core functions from main.py
 from main import (
-    GroqKeyPool,
-    OpenRouterKeyPool,
-    extract_text_groq,
     extract_text_tesseract,
-    extract_text_openrouter,
-    extract_text_tesseract_ai,
-    enhance_pages_with_ai,
+    enhance_pages_with_ai_robust,
     _get_page_count,
     parse_questions,
-    validate_questions,
-    save_raw_text,
 )
 
 
@@ -379,6 +369,116 @@ def _run_extraction(tmp_path: str, start_page: int, end_page: int,
     return pages_text, questions, stats, log_text, last_processed_page, error_occurred
 
 
+def _compute_stats(questions: list[dict]) -> dict:
+    return {
+        "total": len(questions),
+        "with_4_options": sum(1 for q in questions if len(q.get("options", {})) == 4),
+        "with_exam_ref": sum(1 for q in questions if "exam_reference" in q),
+        "pages": len(set(q["page_number"] for q in questions)) if questions else 0,
+    }
+
+
+def _run_extraction_robust(tmp_path: str, start_page: int, end_page: int,
+                           log_container, progress_bar, existing_pages: list = None):
+    """
+    Robust extraction flow:
+    1) Tesseract OCR
+    2) Groq auto-correction
+    3) Parse corrected output (fallback to raw parse)
+    """
+    logger = StreamlitLogCapture(log_container)
+    old_stdout = sys.stdout
+    sys.stdout = logger
+
+    raw_pages_text = list(existing_pages) if existing_pages else []
+    fixed_pages_text = []
+    raw_questions = []
+    questions = []
+    stats = {}
+    error_occurred = False
+    last_processed_page = start_page - 1
+
+    try:
+        print(f"[1/4] Starting Base OCR - Tesseract")
+        print(f"  Pages: {start_page} to {end_page}")
+        progress_bar.progress(5)
+
+        new_pages = extract_text_tesseract(tmp_path, start_page, end_page)
+        if new_pages:
+            raw_pages_text.extend(new_pages)
+            last_processed_page = end_page
+
+        progress_bar.progress(40)
+        print(f"[1/4] Base OCR complete - {len(new_pages)} pages extracted.")
+        st.session_state["raw_pages_text"] = raw_pages_text
+
+        print(f"[2/4] Parsing raw Tesseract output...")
+        raw_questions = parse_questions(raw_pages_text)
+        print(f"[2/4] Parsed {len(raw_questions)} raw questions.")
+        progress_bar.progress(55)
+
+        print(f"[3/4] Auto-correcting Gujarati text with Groq...")
+        checkpoint_path = f"{Path(tmp_path).stem}_streamlit_ai_checkpoint.json"
+        fixed_pages_text = enhance_pages_with_ai_robust(
+            raw_pages_text,
+            ai_provider="groq",
+            checkpoint_path=checkpoint_path,
+            checkpoint_every=10,
+        )
+        st.session_state["fixed_pages_text"] = fixed_pages_text
+        progress_bar.progress(80)
+
+        print(f"[4/4] Parsing corrected output...")
+        fixed_questions = parse_questions(fixed_pages_text)
+        if fixed_questions:
+            questions = fixed_questions
+            print(f"[4/4] Parsed {len(fixed_questions)} corrected questions.")
+        else:
+            questions = raw_questions
+            print("[4/4] Corrected parse empty, falling back to raw parsed questions.")
+
+        stats = _compute_stats(questions)
+        print(f"  Total: {stats['total']} questions")
+        print(f"  Complete (4 options): {stats['with_4_options']}")
+        print(f"  With exam ref: {stats['with_exam_ref']}")
+        print(f"[4/4] Done.")
+        progress_bar.progress(100)
+
+    except Exception as e:
+        error_occurred = True
+        print(f"\n⚠ ERROR: {str(e)}")
+        print(traceback.format_exc())
+
+        if raw_pages_text:
+            for p in reversed(raw_pages_text):
+                if p.get("text"):
+                    last_processed_page = p["page_number"]
+                    break
+
+            print(f"\n--- Partial results available ---")
+            print(f"Pages extracted so far: {len(raw_pages_text)}")
+            print(f"Last successful page: {last_processed_page}")
+
+            try:
+                raw_questions = parse_questions(raw_pages_text)
+                questions = raw_questions
+                stats = _compute_stats(questions)
+                fixed_pages_text = raw_pages_text
+                print(f"Parsed {len(questions)} questions from partial data.")
+            except Exception:
+                questions = []
+                stats = {"total": 0, "with_4_options": 0, "with_exam_ref": 0, "pages": 0}
+
+    finally:
+        st.session_state["raw_pages_text"] = raw_pages_text
+        st.session_state["fixed_pages_text"] = fixed_pages_text if fixed_pages_text else raw_pages_text
+        st.session_state["raw_questions"] = raw_questions
+        log_text = logger.get_logs()
+        sys.stdout = old_stdout
+
+    return raw_pages_text, questions, stats, log_text, last_processed_page, error_occurred
+
+
 # ─── APP ─────────────────────────────────────────────────────────────────────
 
 st.markdown('<div class="app-title">DocuMorph</div>', unsafe_allow_html=True)
@@ -402,7 +502,15 @@ if uploaded_file is not None:
         total_pages = _get_page_count(st.session_state["tmp_path"])
         st.session_state["total_pages"] = total_pages
         # Clear old results when a new file is uploaded
-        for key in ["results", "partial_state"]:
+        for key in [
+            "results",
+            "partial_state",
+            "raw_pages_text",
+            "fixed_pages_text",
+            "raw_questions",
+            "ai_enhanced",
+            "ai_log_msg",
+        ]:
             if key in st.session_state:
                 del st.session_state[key]
 
@@ -504,7 +612,7 @@ if uploaded_file is not None:
             progress = st.progress(0)
 
             tmp_path = st.session_state["tmp_path"]
-            pages_text, questions, stats, log_text, last_page, had_error = _run_extraction(
+            pages_text, questions, stats, log_text, last_page, had_error = _run_extraction_robust(
                 tmp_path, resume_start, resume_end,
                 log_container, progress,
                 existing_pages=partial.get("pages_text", [])
@@ -532,11 +640,16 @@ if uploaded_file is not None:
                 if questions:
                     result_json = {"total_questions": len(questions), "questions": questions}
                     json_str = json.dumps(result_json, ensure_ascii=False, indent=2)
+                    raw_questions = st.session_state.get("raw_questions", [])
+                    raw_json = {"total_questions": len(raw_questions), "questions": raw_questions}
+                    raw_json_str = json.dumps(raw_json, ensure_ascii=False, indent=2)
                     st.session_state["results"] = {
                         "questions": questions,
                         "stats": stats,
                         "json_str": json_str,
-                        "output_filename": f"{Path(uploaded_file.name).stem}_questions.json",
+                        "raw_json_str": raw_json_str,
+                        "output_filename": f"{Path(uploaded_file.name).stem}_questions_fixed.json",
+                        "raw_output_filename": f"{Path(uploaded_file.name).stem}_questions_raw.json",
                         "full_log": log_text,
                     }
                     st.rerun()
@@ -556,7 +669,7 @@ if uploaded_file is not None:
 
             tmp_path = st.session_state["tmp_path"]
 
-            pages_text, questions, stats, log_text, last_page, had_error = _run_extraction(
+            pages_text, questions, stats, log_text, last_page, had_error = _run_extraction_robust(
                 tmp_path, start_page, end_page,
                 log_container, progress
             )
@@ -587,11 +700,16 @@ if uploaded_file is not None:
                 if questions:
                     result_json = {"total_questions": len(questions), "questions": questions}
                     json_str = json.dumps(result_json, ensure_ascii=False, indent=2)
+                    raw_questions = st.session_state.get("raw_questions", [])
+                    raw_json = {"total_questions": len(raw_questions), "questions": raw_questions}
+                    raw_json_str = json.dumps(raw_json, ensure_ascii=False, indent=2)
                     st.session_state["results"] = {
                         "questions": questions,
                         "stats": stats,
                         "json_str": json_str,
-                        "output_filename": f"{Path(uploaded_file.name).stem}_questions.json",
+                        "raw_json_str": raw_json_str,
+                        "output_filename": f"{Path(uploaded_file.name).stem}_questions_fixed.json",
+                        "raw_output_filename": f"{Path(uploaded_file.name).stem}_questions_raw.json",
                         "full_log": log_text,
                     }
                     st.rerun()
@@ -606,13 +724,15 @@ if "results" in st.session_state:
     questions = r["questions"]
     stats = r["stats"]
     json_str = r["json_str"]
+    raw_json_str = r.get("raw_json_str", json.dumps({"total_questions": 0, "questions": []}, ensure_ascii=False, indent=2))
     output_filename = r["output_filename"]
+    raw_output_filename = r.get("raw_output_filename", f"{Path(uploaded_file.name).stem}_questions_raw.json")
     full_log = r["full_log"]
 
     st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
     # --- AI Enhancement Box ---
-    if not st.session_state.get("ai_enhanced", False) and "raw_pages_text" in st.session_state:
+    if False:
         st.markdown("""
         <div style="background-color:#1e3a8a; padding: 1.5rem; border-radius: 8px; margin-bottom: 2rem; border-left: 4px solid #3b82f6;">
             <h3 style="margin-top: 0; color: #ffffff;">✨ Text Quality Looks Garbled?</h3>
@@ -637,7 +757,7 @@ if "results" in st.session_state:
                 old_stdout = sys.stdout
                 sys.stdout = logger
                 try:
-                    enhanced_pages = enhance_pages_with_ai(raw_pages_text, ai_provider="openrouter")
+                    enhanced_pages = enhance_pages_with_ai_robust(raw_pages_text, ai_provider="groq")
                 finally:
                     sys.stdout = old_stdout
                     
@@ -667,8 +787,7 @@ if "results" in st.session_state:
                 st.session_state["ai_log_msg"] = f"✅ AI successfully analyzed and corrected {len(enhanced_pages)} pages of text!"
                 st.rerun()
                 
-    if st.session_state.get("ai_log_msg"):
-        st.success(st.session_state["ai_log_msg"])
+    st.info("Auto-correction with Groq is already applied. Download both fixed and raw JSON below.")
     # Stats row
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -682,16 +801,28 @@ if "results" in st.session_state:
 
     st.markdown("", unsafe_allow_html=True)
 
-    # Download button
-    st.download_button(
-        label=f"Download JSON ({len(questions)} questions)",
-        data=json_str.encode('utf-8'),
-        file_name=output_filename,
-        mime="application/json",
-    )
+    # Download buttons
+    dc1, dc2 = st.columns(2)
+    with dc1:
+        st.download_button(
+            label=f"Download Fixed JSON ({len(questions)} questions)",
+            data=json_str.encode('utf-8'),
+            file_name=output_filename,
+            mime="application/json",
+            use_container_width=True,
+        )
+    with dc2:
+        raw_total = json.loads(raw_json_str).get("total_questions", 0)
+        st.download_button(
+            label=f"Download Raw JSON ({raw_total} questions)",
+            data=raw_json_str.encode('utf-8'),
+            file_name=raw_output_filename,
+            mime="application/json",
+            use_container_width=True,
+        )
 
     # Preview tabs
-    tab1, tab2, tab3 = st.tabs(["Preview", "Raw JSON", "Full Log"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Preview", "Fixed JSON", "Raw JSON", "Full Log"])
 
     with tab1:
         show_count = min(5, len(questions))
@@ -722,11 +853,25 @@ if "results" in st.session_state:
         st.code(preview_json, language="json")
 
     with tab3:
+        preview_raw_json = raw_json_str[:5000]
+        if len(raw_json_str) > 5000:
+            preview_raw_json += "\n\n... (truncated, download for full output)"
+        st.code(preview_raw_json, language="json")
+
+    with tab4:
         st.code(full_log, language="text")
 
     # Clear results button
     if st.button("Clear Results", key="btn_clear"):
-        for key in ["results", "partial_state"]:
+        for key in [
+            "results",
+            "partial_state",
+            "raw_pages_text",
+            "fixed_pages_text",
+            "raw_questions",
+            "ai_enhanced",
+            "ai_log_msg",
+        ]:
             if key in st.session_state:
                 del st.session_state[key]
         st.rerun()

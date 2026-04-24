@@ -10,7 +10,7 @@ DocuMorph is designed to handle the structural complexities of scanned examinati
 The primary extraction pipeline interfaces with the Groq inference API, utilizing multimodal large language models (`meta-llama/llama-4-scout-17b-16e-instruct`). This circumvents conventional bounding-box and character-recognition strategies, instead allowing the model to interpret document layout and script natively as a unified visual-spatial task.
 
 ### Multi-Key Load Balancing
-To mitigate rate-limiting constraints on the Groq free tier API (HTTP 429), the system implements a `GroqKeyPool` coordinator. This class maintains a connection pool of multiple API keys, executing requests via a round-robin algorithm. Upon encountering a rate limit, the pool registers a localized cooldown state and automatically falls back to the next available unexhausted key, ensuring continuous pipeline execution.
+To mitigate rate-limiting constraints on the Groq free tier API (HTTP 429), the system implements a `GroqKeyPool` coordinator with reliability-first behavior. It rotates keys in round-robin order, applies global request pacing, tracks per-key cooldown state, and uses adaptive exponential backoff (+ jitter) when 429 pressure is high. If all keys are cooling down, it waits for earliest recovery instead of hot-looping.
 
 ### Memory Optimization
 Image rasterization via Poppler (`pdf2image`) operates strictly sequentially. Converting high-resolution PDFs (300 DPI) to intermediate bitmap arrays can cause immediate Out-Of-Memory (OOM) faults within constrained execution environments (e.g., 1GB container limits). The system mitigates this by isolating the conversion, inference, and memory deallocation lifecycle to a single-page scope. 
@@ -68,18 +68,28 @@ To initialize the user interface and local server:
 ```bash
 streamlit run app.py
 ```
-The interface manages file I/O, configures extraction bounds, and maintains asynchronous state, preserving JSON output binaries in `st.session_state` to prevent DOM-reconciliation data loss.
+The interface now runs an automatic two-stage pipeline:
+1. Tesseract OCR (raw extraction)
+2. Groq text correction (Gujarati repair)
+
+It then provides both downloads:
+- corrected JSON (`*_questions_fixed.json`)
+- raw JSON (`*_questions_raw.json`)
 
 ### Command Line Interface
 Execute the core binary directly for headless operations:
 ```bash
-python main.py path/to/document.pdf --pages 10-20 --engine groq --output results.json
+python main.py path/to/document.pdf --pages 10-20 --engine tesseract+groq
 ```
 Arguments:
 * `--pages`: Specify a continuous sub-range (e.g., 1-5). Defaults to the entire document.
-* `--engine`: Select the execution layer (`groq` or `tesseract`). Defaults to `groq`.
-* `--output`: Declare the target relative path for serialized JSON.
+* `--engine`: Select execution layer (`openrouter`, `groq`, `tesseract`, `tesseract+ai`, `tesseract+groq`). Default is `openrouter`.
+* `--output`: Declare the target output path. In `tesseract+groq`, this is the fixed JSON path.
 * `--save-raw`: Retain raw intermediate text prior to RegEx parsing.
+
+For `--engine tesseract+groq`, two JSON files are produced:
+- raw JSON: `<pdf_stem>_questions_raw.json`
+- fixed JSON: `<pdf_stem>_questions_fixed.json` (or `--output` path)
 
 ## Output Schema
 
