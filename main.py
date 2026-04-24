@@ -1047,6 +1047,100 @@ def extract_text_tesseract(pdf_path: str, start_page: int = None, end_page: int 
     return pages_text
 
 
+def extract_text_tesseract_groq_dual(pdf_path: str, start_page: int = None, end_page: int = None) -> tuple[list[dict], list[dict]]:
+    """
+    HYBRID DUAL ENGINE: Tesseract OCR + Groq text correction.
+
+    Returns:
+        (raw_pages_text, fixed_pages_text)
+    """
+    groq_pool = GroqKeyPool()
+
+    # Determine page range
+    if start_page and end_page:
+        first_page = start_page
+        last_page = end_page
+    else:
+        total_pages = _get_page_count(pdf_path)
+        first_page = start_page or 1
+        last_page = end_page or total_pages
+        if last_page == 0:
+            last_page = first_page
+
+    total = last_page - first_page + 1
+    print(f"Pages to process: {first_page} to {last_page} ({total} pages)")
+    print(f"OCR Engine: Tesseract + Groq Gujarati Correction")
+    print(f"---")
+
+    raw_pages_text = []
+    fixed_pages_text = []
+    groq_fallback_used = False
+
+    for page_num in range(first_page, last_page + 1):
+        i = page_num - first_page
+        print(f"[Page {page_num}] Step 1/2: Tesseract OCR (DPI=300)...")
+
+        try:
+            img = _convert_single_page(pdf_path, page_num, dpi=300)
+        except Exception as e:
+            print(f"[Page {page_num}] ERROR converting: {str(e)[:150]}")
+            raw_pages_text.append({"page_number": page_num, "text": ""})
+            fixed_pages_text.append({"page_number": page_num, "text": ""})
+            continue
+
+        if img is None:
+            print(f"[Page {page_num}] WARNING: No image returned, skipping.")
+            raw_pages_text.append({"page_number": page_num, "text": ""})
+            fixed_pages_text.append({"page_number": page_num, "text": ""})
+            continue
+
+        raw_result = ocr_page_two_columns(img, page_num)
+        raw_text = raw_result.get("text", "")
+        raw_pages_text.append(raw_result)
+        raw_len = len(raw_text)
+        print(f"[Page {page_num}] Tesseract extracted {raw_len} chars.")
+
+        del img
+        gc.collect()
+
+        fixed_text = raw_text
+        if should_skip_ai_correction(raw_text):
+            print(f"[Page {page_num}] Step 2/2: Skipping Groq fix (near-empty text).")
+        elif not groq_pool.available:
+            if not groq_fallback_used:
+                print("⚠ Groq unavailable. Continuing with raw Tesseract text.")
+                groq_fallback_used = True
+        else:
+            print(f"[Page {page_num}] Step 2/2: Groq correcting Gujarati text...")
+            fixed_text = fix_text_with_ai_groq_robust(groq_pool, raw_text, page_num)
+
+        fixed_pages_text.append({"page_number": page_num, "text": fixed_text})
+        fixed_len = len(fixed_text)
+        print(f"[Page {page_num}] Done. Raw→Fixed chars: {raw_len} → {fixed_len}. ({i + 1}/{total})")
+
+        if i < total - 1:
+            time.sleep(0.3)
+
+        # Checkpoint every 10 pages
+        if len(raw_pages_text) % 10 == 0:
+            checkpoint_path = f"{Path(pdf_path).stem}_tesseract_groq_checkpoint.json"
+            with open(checkpoint_path, 'w', encoding='utf-8') as f:
+                json.dump(
+                    {
+                        "processed_pages": len(raw_pages_text),
+                        "raw_pages": raw_pages_text,
+                        "fixed_pages": fixed_pages_text
+                    },
+                    f,
+                    ensure_ascii=False
+                )
+            print(f"   [Checkpoint saved: {checkpoint_path}]")
+
+    print(f"---")
+    print(f"Hybrid OCR complete. Processed {len(raw_pages_text)} pages.")
+    return raw_pages_text, fixed_pages_text
+
+
 # AI TEXT CORRECTION (for fixing Tesseract OCR errors)
 
 def fix_text_with_ai_groq(key_pool: GroqKeyPool, raw_text: str, page_number: int, retry_count: int = 3) -> str:
@@ -1334,7 +1428,7 @@ def extract_text_tesseract_ai(pdf_path: str, start_page: int = None, end_page: i
 
             # Try primary provider first
             if ai_provider == "groq" and groq_pool:
-                fixed_text = fix_text_with_ai_groq(groq_pool, raw_text, page_num)
+                fixed_text = fix_text_with_ai_groq_robust(groq_pool, raw_text, page_num)
             elif ai_provider == "openrouter" and openrouter_pool:
                 fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
 
@@ -1345,7 +1439,7 @@ def extract_text_tesseract_ai(pdf_path: str, start_page: int = None, end_page: i
                     fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
                 elif ai_provider == "openrouter" and groq_pool:
                     print(f"[Page {page_num}] OpenRouter failed, trying Groq fallback...")
-                    fixed_text = fix_text_with_ai_groq(groq_pool, raw_text, page_num)
+                    fixed_text = fix_text_with_ai_groq_robust(groq_pool, raw_text, page_num)
 
             if fixed_text is None:
                 fixed_text = raw_text
@@ -1419,7 +1513,7 @@ def enhance_pages_with_ai(pages_text: list[dict], ai_provider: str = "openrouter
 
         # Try primary provider first
         if ai_provider == "groq" and groq_pool:
-            fixed_text = fix_text_with_ai_groq(groq_pool, raw_text, page_num)
+            fixed_text = fix_text_with_ai_groq_robust(groq_pool, raw_text, page_num)
         elif ai_provider == "openrouter" and openrouter_pool:
             fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
 
@@ -1430,7 +1524,7 @@ def enhance_pages_with_ai(pages_text: list[dict], ai_provider: str = "openrouter
                 fixed_text = fix_text_with_ai_openrouter(openrouter_pool, raw_text, page_num)
             elif ai_provider == "openrouter" and groq_pool:
                 print(f"[Page {page_num}] OpenRouter failed, trying Groq fallback...")
-                fixed_text = fix_text_with_ai_groq(groq_pool, raw_text, page_num)
+                fixed_text = fix_text_with_ai_groq_robust(groq_pool, raw_text, page_num)
 
         if fixed_text is None:
             fixed_text = raw_text
