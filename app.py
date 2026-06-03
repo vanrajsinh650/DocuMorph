@@ -14,7 +14,9 @@ from main import (
     parse_questions,
 )
 
-# ─── LOG CAPTURE ─────────────────────────────────────────────────────────────
+def st_markdown_html(html_str: str):
+    st.markdown(html_str.replace("\n", " "), unsafe_allow_html=True)
+
 
 def render_status_html(logs: list[str]) -> str:
     import re
@@ -228,7 +230,7 @@ class StreamlitLogCapture:
             self.logs.append(text.strip())
             try:
                 html = render_status_html(self.logs)
-                self.log_container.markdown(html, unsafe_allow_html=True)
+                self.log_container.markdown(html.replace("\n", " "), unsafe_allow_html=True)
             except Exception:
                 pass
         # Also write to original stdout for terminal
@@ -1419,7 +1421,7 @@ def _run_extraction_robust(tmp_path: str, start_page: int, end_page: int,
 
 # ─── APP ─────────────────────────────────────────────────────────────────────
 
-st.markdown("""
+st_markdown_html("""
 <div class="hero">
     <div class="hero-content">
         <div class="hero-badge"><span class="hero-badge-dot"></span> Open-Source OCR Pipeline</div>
@@ -1430,7 +1432,7 @@ st.markdown("""
         </div>
     </div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
 uploaded_file = st.file_uploader("Upload Document", type=["pdf"], help="Select a scanned Gujarati MCQ PDF to process", label_visibility="collapsed")
 
@@ -1463,7 +1465,7 @@ if uploaded_file is not None:
 
     total_pages = st.session_state.get("total_pages", 0)
 
-    st.markdown(f"""
+    st_markdown_html(f"""
 <div class="status-box">
     <div class="status-value">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #a1a1aa"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
@@ -1471,7 +1473,7 @@ if uploaded_file is not None:
     </div>
     <div class="status-meta">{file_size_mb:.1f} MB &bull; {total_pages} pages</div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
     # ── Settings expander ──
     with st.expander("Settings", expanded=True):
@@ -1512,7 +1514,7 @@ if uploaded_file is not None:
     partial = st.session_state.get("partial_state")
 
     if partial and not st.session_state.get("results"):
-        st.markdown(f"""
+        st_markdown_html(f"""
 <div class="resume-box">
     <div class="resume-title">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
@@ -1524,7 +1526,7 @@ if uploaded_file is not None:
         Original range: {partial['original_start']}–{partial['original_end']}
     </div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
         rc1, rc2, rc3 = st.columns(3)
         with rc1:
@@ -1818,14 +1820,14 @@ if "results" in st.session_state:
                 if "exam_reference" in q:
                     ref_html = f'<div class="q-ref">{q["exam_reference"]}</div>'
 
-                st.markdown(f"""
+                st_markdown_html(f"""
 <div class="q-card">
     <div class="q-number">Question {q['question_number']} &bull; Page {q['page_number']}</div>
     <div class="q-text">{q['question_text']}</div>
     {options_html}
     {ref_html}
 </div>
-""", unsafe_allow_html=True)
+""")
 
     with tab2:
         st.markdown("### 📊 Extraction Quality Audit")
@@ -1841,7 +1843,7 @@ if "results" in st.session_state:
         
         aud_c1, aud_c2 = st.columns(2)
         with aud_c1:
-            st.markdown(f"""
+            st_markdown_html(f"""
 <div class="audit-card">
     <div class="audit-card-title">Option Completeness</div>
     <div class="audit-card-big">{audit_complete} <span class="audit-card-sub">/ {audit_total} questions</span></div>
@@ -1850,9 +1852,9 @@ if "results" in st.session_state:
     </div>
     <div class="audit-card-desc">{complete_pct:.1f}% of questions have exactly 4 multiple-choice options (A, B, C, D).</div>
 </div>
-""", unsafe_allow_html=True)
+""")
         with aud_c2:
-            st.markdown(f"""
+            st_markdown_html(f"""
 <div class="audit-card">
     <div class="audit-card-title">Metadata Tagging</div>
     <div class="audit-card-big">{audit_ref} <span class="audit-card-sub">/ {audit_total} questions</span></div>
@@ -1861,11 +1863,11 @@ if "results" in st.session_state:
     </div>
     <div class="audit-card-desc">{ref_pct:.1f}% of questions are tagged with their specific exam code reference.</div>
 </div>
-""", unsafe_allow_html=True)
+""")
             
         st.markdown("#### ✅ Verification Checklist")
         
-        st.markdown(f"""
+        st_markdown_html(f"""
 <div class="verification-checklist">
     <div class="check-item">
         <div class="check-icon-wrap green">
@@ -1895,13 +1897,13 @@ if "results" in st.session_state:
         </div>
     </div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
     with tab3:
         st.markdown("### ✨ DocuMorph Pipeline Insights")
         st.markdown("Learn how DocuMorph extracts and reconstructs questions using hybrid local and cloud technologies.")
         
-        st.markdown(f"""
+        st_markdown_html(f"""
 <div class="insights-timeline">
     <div class="insight-node">
         <div class="insight-node-header">
@@ -1934,7 +1936,7 @@ if "results" in st.session_state:
         </div>
     </div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
     # Clear results button
     if st.button("Clear Results", key="btn_clear"):
@@ -1953,7 +1955,7 @@ if "results" in st.session_state:
 
 elif uploaded_file is None:
     # ── HOW IT WORKS ──
-    st.markdown("""
+    st_markdown_html("""
 <hr class="section-divider">
 <div class="landing-section">
     <div class="section-label">How It Works</div>
@@ -2010,10 +2012,10 @@ elif uploaded_file is None:
         </div>
     </div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
     # ── FEATURES ──
-    st.markdown("""
+    st_markdown_html("""
 <hr class="section-divider">
 <div class="landing-section">
     <div class="section-label">Features</div>
@@ -2065,10 +2067,10 @@ elif uploaded_file is None:
         </div>
     </div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
     # ── OUTPUT SCHEMA PREVIEW ──
-    st.markdown("""
+    st_markdown_html("""
 <hr class="section-divider">
 <div class="landing-section">
     <div class="section-label">Data Capture</div>
@@ -2098,14 +2100,14 @@ elif uploaded_file is None:
         </div>
     </div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
     # ── FOOTER ──
-    st.markdown("""
+    st_markdown_html("""
 <div class="site-footer">
     <div class="footer-text">
         Built by <a href="https://github.com/vanrajsinh650" target="_blank">vanrajsinh650</a> &bull;
         <a href="https://github.com/vanrajsinh650/DocuMorph" target="_blank">View on GitHub</a>
     </div>
 </div>
-""", unsafe_allow_html=True)
+""")
