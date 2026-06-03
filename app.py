@@ -5,6 +5,7 @@ import sys
 import traceback
 from pathlib import Path
 
+
 # Import core functions from main.py
 from main import (
     extract_text_tesseract,
@@ -12,7 +13,6 @@ from main import (
     _get_page_count,
     parse_questions,
 )
-
 
 # ─── LOG CAPTURE ─────────────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ class StreamlitLogCapture:
 st.set_page_config(
     page_title="DocuMorph",
     page_icon="📄",
-    layout="centered",
+    layout="wide",
     initial_sidebar_state="collapsed",
 )
 
@@ -65,9 +65,11 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
     .stApp {
-        background-color: #0a0a0a;
-        color: #e0e0e0;
+        background-color: #09090b;
+        color: #a1a1aa;
     }
 
     #MainMenu {visibility: hidden;}
@@ -75,180 +77,403 @@ st.markdown("""
     header {visibility: hidden;}
 
     .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-        max-width: 720px;
+        padding-top: 0rem !important;
+        padding-bottom: 0rem !important;
+        max-width: 100% !important;
+        padding-left: 0 !important;
+        padding-right: 0 !important;
+    }
+
+    /* Center and constrain all Streamlit blocks except the hero section */
+    div[data-testid="element-container"]:not(:has(.hero)) {
+        max-width: 900px !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
+        width: 100% !important;
+    }
+
+    /* Hide any default Streamlit or native hr elements that do not have our custom classes */
+    hr:not(.section-divider):not(.divider) {
+        display: none !important;
+    }
+
+    .stFileUploader, .stButton, .stDownloadButton, .stSelectbox, .stNumberInput, .stTextInput, .stExpander, .stTabs, div[data-testid="stHorizontalBlock"], div[data-testid="stExpander"] {
+        max-width: 800px !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
+    }
+
+    .status-box, .q-card, .resume-box, .divider, .stCodeBlock {
+        max-width: 800px;
+        margin-left: auto !important;
+        margin-right: auto !important;
+    }
+
+    * {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
     h1, h2, h3, h4, h5, h6 {
-        color: #ffffff !important;
+        color: #fafafa !important;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         font-weight: 600;
+        letter-spacing: -0.025em;
     }
 
     p, span, label, .stMarkdown {
-        color: #b0b0b0 !important;
+        color: #a1a1aa !important;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
 
-    .app-title {
-        font-size: 1.8rem;
-        font-weight: 700;
-        color: #ffffff;
-        margin-bottom: 0.2rem;
-        letter-spacing: -0.02em;
+    /* ── HERO ── */
+    .hero {
+        position: relative;
+        width: 100%;
+        min-height: 70vh;
+        background: linear-gradient(165deg, #0c1222 0%, #09090b 50%, #0b0d10 100%);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        margin-bottom: 0;
+        margin-top: -3rem;
+        overflow: hidden;
+    }
+    .hero::before {
+        content: '';
+        position: absolute;
+        top: -20%; left: 30%; width: 40%; height: 60%;
+        background: radial-gradient(ellipse, rgba(56,189,248,0.08) 0%, transparent 70%);
+        filter: blur(60px);
+    }
+    .hero::after {
+        content: '';
+        position: absolute;
+        bottom: -10%; right: 20%; width: 30%; height: 40%;
+        background: radial-gradient(ellipse, rgba(139,92,246,0.06) 0%, transparent 70%);
+        filter: blur(50px);
+    }
+    .hero-content {
+        position: relative; z-index: 1;
+        max-width: 680px; padding: 2rem;
+    }
+    .hero-badge {
+        display: inline-flex; align-items: center; gap: 0.375rem;
+        background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.2);
+        border-radius: 100px; padding: 0.25rem 0.75rem;
+        font-size: 0.75rem; font-weight: 500; color: #38bdf8;
+        margin-bottom: 1.5rem;
+    }
+    .hero-badge-dot {
+        width: 6px; height: 6px; border-radius: 50%;
+        background: #38bdf8;
+        animation: pulse-dot 2s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+    }
+    .hero-title {
+        font-size: 3.5rem; font-weight: 800; color: #ffffff;
+        letter-spacing: -0.04em; margin-bottom: 1rem; line-height: 1.1;
+    }
+    .hero-subtitle {
+        font-size: 1.0625rem; color: #a1a1aa;
+        line-height: 1.7; max-width: 560px; margin: 0 auto;
+    }
+    .hero-subtitle strong { color: #e4e4e7; font-weight: 600; }
+
+    /* ── SECTION WRAPPERS ── */
+    .landing-section {
+        max-width: 900px;
+        margin: 0 auto !important;
+        padding: 3rem 2rem;
+    }
+    .section-label {
+        font-size: 0.6875rem; font-weight: 600; text-transform: uppercase;
+        letter-spacing: 0.1em; color: #38bdf8; margin-bottom: 0.5rem;
+    }
+    .section-title {
+        font-size: 1.75rem; font-weight: 700; color: #fafafa;
+        letter-spacing: -0.03em; margin-bottom: 0.5rem;
+    }
+    .section-desc {
+        font-size: 0.9375rem; color: #71717a; line-height: 1.6;
+        max-width: 600px; margin-bottom: 2rem;
     }
 
-    .app-subtitle {
-        font-size: 0.9rem;
-        color: #666666;
-        margin-bottom: 2rem;
+    /* ── HOW IT WORKS PIPELINE ── */
+    .pipeline {
+        display: flex; align-items: flex-start; gap: 0;
+        position: relative; margin: 1rem 0;
+    }
+    .pipe-step {
+        flex: 1; display: flex; flex-direction: column; align-items: center;
+        text-align: center; position: relative; padding: 0 0.5rem;
+    }
+    .pipe-icon {
+        width: 56px; height: 56px; border-radius: 12px;
+        background: #18181b; border: 1px solid #27272a;
+        display: flex; align-items: center; justify-content: center;
+        margin-bottom: 0.75rem; position: relative; z-index: 2;
+        transition: border-color 0.2s, background-color 0.2s;
+    }
+    .pipe-icon svg { color: #71717a; }
+    .pipe-step:hover .pipe-icon {
+        border-color: #38bdf8; background: rgba(56,189,248,0.05);
+    }
+    .pipe-step:hover .pipe-icon svg { color: #38bdf8; }
+    .pipe-num {
+        position: absolute; top: -6px; right: -6px;
+        width: 20px; height: 20px; border-radius: 50%;
+        background: #27272a; border: 2px solid #09090b;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 0.625rem; font-weight: 700; color: #a1a1aa;
+    }
+    .pipe-title {
+        font-size: 0.8125rem; font-weight: 600; color: #fafafa;
+        margin-bottom: 0.25rem;
+    }
+    .pipe-desc {
+        font-size: 0.75rem; color: #71717a; line-height: 1.4;
+        max-width: 140px;
+    }
+    .pipe-arrow {
+        display: flex; align-items: center; padding-top: 1rem;
+        color: #3f3f46; flex-shrink: 0;
     }
 
+    /* ── FEATURES GRID ── */
+    .features-grid {
+        display: grid; grid-template-columns: repeat(3, 1fr);
+        gap: 1rem; margin: 1rem 0;
+    }
+    @media (max-width: 640px) {
+        .features-grid { grid-template-columns: 1fr; }
+        .pipeline { flex-direction: column; align-items: center; }
+        .pipe-arrow { transform: rotate(90deg); padding: 0.5rem 0; }
+    }
+    .feature-card {
+        background: #18181b; border: 1px solid #27272a;
+        border-radius: 8px; padding: 1.25rem;
+        transition: border-color 0.2s;
+    }
+    .feature-card:hover { border-color: #3f3f46; }
+    .feature-icon {
+        width: 36px; height: 36px; border-radius: 8px;
+        background: rgba(56,189,248,0.08);
+        display: flex; align-items: center; justify-content: center;
+        margin-bottom: 0.75rem;
+    }
+    .feature-icon svg { color: #38bdf8; }
+    .feature-title {
+        font-size: 0.875rem; font-weight: 600; color: #fafafa;
+        margin-bottom: 0.25rem;
+    }
+    .feature-desc {
+        font-size: 0.8125rem; color: #71717a; line-height: 1.5;
+    }
+
+    /* ── OUTPUT PREVIEW ── */
+    .output-preview {
+        background: #0f0f12; border: 1px solid #27272a;
+        border-radius: 8px; overflow: hidden; margin: 1rem 0;
+    }
+    .output-tab-bar {
+        display: flex; align-items: center; gap: 0;
+        border-bottom: 1px solid #27272a;
+        padding: 0 1rem; background: #18181b;
+    }
+    .output-tab {
+        padding: 0.625rem 0.75rem; font-size: 0.75rem;
+        color: #71717a; font-weight: 500;
+        border-bottom: 2px solid transparent;
+    }
+    .output-tab.active {
+        color: #fafafa; border-bottom-color: #38bdf8;
+    }
+    .output-body {
+        padding: 1rem 1.25rem;
+    }
+    .output-body pre {
+        margin: 0; font-size: 0.8125rem; color: #a1a1aa;
+        line-height: 1.6; overflow-x: auto;
+        font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+    }
+    .output-body .json-key { color: #38bdf8; }
+    .output-body .json-str { color: #a78bfa; }
+    .output-body .json-num { color: #fb923c; }
+
+    /* ── SECTION DIVIDER ── */
+    .section-divider {
+        border: none; border-top: 1px solid #1a1a1e;
+        margin: 0 auto !important;
+        max-width: 900px !important;
+        display: block !important;
+    }
+
+    /* ── FOOTER ── */
+    .site-footer {
+        max-width: 900px; margin: 0 auto !important;
+        padding: 2rem 2rem; text-align: center;
+        border-top: 1px solid #1a1a1e;
+    }
+    .footer-text {
+        font-size: 0.75rem; color: #3f3f46;
+    }
+    .footer-text a { color: #71717a; text-decoration: none; }
+    .footer-text a:hover { color: #a1a1aa; }
+
+    /* ── TOOL WORKSPACE ELEMENTS (below hero when uploading) ── */
     .divider {
         border: none;
-        border-top: 1px solid #1a1a1a;
+        border-top: 1px solid #27272a;
         margin: 1.5rem 0;
     }
 
     .stFileUploader > div {
-        background-color: #111111 !important;
-        border: 1px solid #222222 !important;
-        border-radius: 8px !important;
+        background-color: #09090b !important;
+        border: 1px dashed #27272a !important;
+        border-radius: 6px !important;
+        transition: border-color 0.15s ease;
+    }
+    .stFileUploader > div:hover {
+        border-color: #3f3f46 !important;
+    }
+
+    /* Remove Streamlit's bottom border/line under the file uploader */
+    .stFileUploader {
+        padding-bottom: 0 !important;
+    }
+    .stFileUploader > div > div {
+        border-bottom: none !important;
+    }
+    div[data-testid="stFileUploader"] > section > div {
+        border-bottom: none !important;
+    }
+    div[data-testid="stFileUploader"] + div > hr,
+    div[data-testid="stFileUploader"] ~ hr {
+        display: none !important;
+    }
+    /* Hide any small separator/line elements Streamlit injects */
+    .stFileUploader small,
+    .stFileUploader > div > small {
+        display: none !important;
     }
 
     .stButton > button {
-        background-color: #ffffff !important;
-        color: #000000 !important;
+        background-color: #fafafa !important;
+        color: #09090b !important;
         border: none !important;
-        border-radius: 6px !important;
-        font-weight: 600 !important;
-        font-size: 0.85rem !important;
-        padding: 0.5rem 1.5rem !important;
+        border-radius: 4px !important;
+        font-weight: 500 !important;
+        font-size: 0.875rem !important;
+        padding: 0.5rem 1rem !important;
         width: 100%;
+        transition: opacity 0.15s ease;
     }
-
-    .stButton > button:hover { opacity: 0.85; }
+    .stButton > button:hover { opacity: 0.9; }
 
     .stDownloadButton > button {
-        background-color: #ffffff !important;
-        color: #000000 !important;
-        border: none !important;
-        border-radius: 6px !important;
-        font-weight: 600 !important;
+        background-color: #18181b !important;
+        color: #fafafa !important;
+        border: 1px solid #27272a !important;
+        border-radius: 4px !important;
+        font-weight: 500 !important;
+        font-size: 0.875rem !important;
         width: 100%;
+        transition: background-color 0.15s ease;
+    }
+    .stDownloadButton > button:hover {
+        background-color: #27272a !important;
     }
 
     .stSelectbox > div > div,
     .stNumberInput > div > div > input,
     .stTextInput > div > div > input {
-        background-color: #111111 !important;
-        border-color: #222222 !important;
-        color: #e0e0e0 !important;
+        background-color: #09090b !important;
+        border: 1px solid #27272a !important;
+        border-radius: 4px !important;
+        color: #fafafa !important;
+        font-size: 0.875rem !important;
     }
 
     .status-box {
-        background-color: #111111;
-        border: 1px solid #1a1a1a;
-        border-radius: 8px;
-        padding: 1rem 1.2rem;
+        background-color: #18181b;
+        border: 1px solid #27272a;
+        border-radius: 6px;
+        padding: 0.875rem 1rem;
         margin: 0.5rem 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
     }
-
-    .status-label {
-        font-size: 0.75rem;
-        color: #555555;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: 0.3rem;
-    }
-
     .status-value {
-        font-size: 1.1rem;
-        color: #ffffff;
-        font-weight: 600;
+        font-size: 0.875rem; color: #fafafa; font-weight: 500;
+        display: flex; align-items: center; gap: 0.5rem;
     }
+    .status-meta { font-size: 0.75rem; color: #71717a; }
 
     .stat-card {
-        background-color: #111111;
-        border: 1px solid #1a1a1a;
-        border-radius: 8px;
-        padding: 0.8rem 1rem;
-        text-align: center;
+        background-color: #09090b; border: 1px solid #27272a;
+        border-radius: 6px; padding: 0.75rem 1rem;
+        display: flex; flex-direction: column;
     }
-
     .stat-number {
-        font-size: 1.5rem;
-        font-weight: 700;
-        color: #ffffff;
+        font-size: 1.25rem; font-weight: 600; color: #fafafa;
+        margin-bottom: 0.125rem; line-height: 1;
     }
+    .stat-label { font-size: 0.75rem; color: #71717a; font-weight: 500; }
 
-    .stat-label {
-        font-size: 0.7rem;
-        color: #555555;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }
+    .stProgress > div > div { background-color: #27272a !important; }
+    .stProgress > div > div > div { background-color: #fafafa !important; }
 
-    .stProgress > div > div { background-color: #222222 !important; }
-    .stProgress > div > div > div { background-color: #ffffff !important; }
-
-    .stTabs [data-baseweb="tab-list"] { background-color: transparent; gap: 2rem; }
+    .stTabs [data-baseweb="tab-list"] { background-color: transparent; gap: 1rem; }
     .stTabs [data-baseweb="tab"] {
         background-color: transparent !important;
-        color: #666666 !important;
+        color: #71717a !important;
         border-bottom: 2px solid transparent;
-        padding-bottom: 0.5rem;
-        font-weight: 500;
-        font-size: 1rem;
+        padding-bottom: 0.5rem; font-weight: 500;
+        font-size: 0.875rem; margin-right: 1rem;
     }
     .stTabs [aria-selected="true"] {
-        color: #ffffff !important;
-        border-bottom-color: #ffffff !important;
+        color: #fafafa !important;
+        border-bottom-color: #fafafa !important;
     }
 
     .q-card {
-        background-color: #111111;
-        border: 1px solid #1a1a1a;
-        border-radius: 8px;
-        padding: 1rem 1.2rem;
-        margin-bottom: 0.8rem;
+        background-color: #18181b; border: 1px solid #27272a;
+        border-radius: 6px; padding: 1rem; margin-bottom: 0.5rem;
     }
-    .q-number { font-size: 0.7rem; color: #444444; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.4rem; }
-    .q-text { font-size: 0.9rem; color: #e0e0e0; line-height: 1.5; margin-bottom: 0.6rem; }
-    .q-option { font-size: 0.82rem; color: #888888; padding: 0.15rem 0; }
-    .q-ref { font-size: 0.72rem; color: #444444; margin-top: 0.5rem; }
+    .q-number { font-size: 0.75rem; color: #71717a; font-weight: 500; margin-bottom: 0.5rem; }
+    .q-text { font-size: 0.875rem; color: #fafafa; line-height: 1.5; margin-bottom: 0.75rem; font-weight: 500; }
+    .q-option { font-size: 0.875rem; color: #a1a1aa; padding: 0.125rem 0; display: flex; gap: 0.5rem; }
+    .q-option-key { color: #71717a; font-weight: 500; }
+    .q-ref { font-size: 0.75rem; color: #71717a; margin-top: 0.75rem; display: inline-block; background-color: #27272a; padding: 0.125rem 0.375rem; border-radius: 4px; }
 
-    /* Log panel */
     .stCodeBlock {
-        background-color: #0d0d0d !important;
-        border: 1px solid #1a1a1a !important;
+        background-color: #09090b !important;
+        border: 1px solid #27272a !important;
+        border-radius: 6px !important;
     }
     .stCodeBlock code {
-        color: #888888 !important;
+        color: #a1a1aa !important;
         font-size: 0.75rem !important;
     }
 
     .resume-box {
-        background-color: #111111;
-        border: 1px solid #2a2a1a;
-        border-radius: 8px;
-        padding: 1rem 1.2rem;
-        margin: 0.8rem 0;
+        background-color: #18181b; border: 1px solid #b45309;
+        border-radius: 6px; padding: 1rem; margin: 0.8rem 0;
     }
     .resume-title {
-        font-size: 0.85rem;
-        color: #ccaa44;
-        font-weight: 600;
-        margin-bottom: 0.4rem;
+        font-size: 0.875rem; color: #fb923c; font-weight: 600;
+        margin-bottom: 0.25rem;
+        display: flex; align-items: center; gap: 0.5rem;
     }
-    .resume-info {
-        font-size: 0.8rem;
-        color: #888888;
-    }
+    .resume-info { font-size: 0.8125rem; color: #a1a1aa; }
 </style>
 """, unsafe_allow_html=True)
-
 
 # ─── HELPERS ─────────────────────────────────────────────────────────────────
 
@@ -481,11 +706,20 @@ def _run_extraction_robust(tmp_path: str, start_page: int, end_page: int,
 
 # ─── APP ─────────────────────────────────────────────────────────────────────
 
-st.markdown('<div class="app-title">DocuMorph</div>', unsafe_allow_html=True)
-st.markdown('<div class="app-subtitle">PDF to structured JSON — Gujarati MCQ extraction</div>', unsafe_allow_html=True)
-st.markdown('<hr class="divider">', unsafe_allow_html=True)
+st.markdown("""
+<div class="hero">
+    <div class="hero-content">
+        <div class="hero-badge"><span class="hero-badge-dot"></span> Open-Source OCR Pipeline</div>
+        <div class="hero-title">DocuMorph</div>
+        <div class="hero-subtitle">
+            Extract <strong>Gujarati multiple-choice questions</strong> from scanned PDF exam papers
+            and convert them into clean, <strong>structured JSON</strong> — automatically.
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-uploaded_file = st.file_uploader("Upload PDF", type=["pdf"], help="Scanned Gujarati MCQ PDF")
+uploaded_file = st.file_uploader("Upload Document", type=["pdf"], help="Select a scanned Gujarati MCQ PDF to process", label_visibility="collapsed")
 
 # ─── SETTINGS ────────────────────────────────────────────────────────────────
 
@@ -518,9 +752,11 @@ if uploaded_file is not None:
 
     st.markdown(f"""
     <div class="status-box">
-        <div class="status-label">File</div>
-        <div class="status-value">{uploaded_file.name}</div>
-        <div style="color: #444; font-size: 0.8rem; margin-top: 0.2rem;">{file_size_mb:.1f} MB · {total_pages} pages</div>
+        <div class="status-value">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #a1a1aa"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+            {uploaded_file.name}
+        </div>
+        <div class="status-meta">{file_size_mb:.1f} MB &bull; {total_pages} pages</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -565,9 +801,12 @@ if uploaded_file is not None:
     if partial and not st.session_state.get("results"):
         st.markdown(f"""
         <div class="resume-box">
-            <div class="resume-title">⚠ Previous run stopped</div>
+            <div class="resume-title">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                Previous run stopped
+            </div>
             <div class="resume-info">
-                Extracted {partial['pages_done']} pages · {partial['questions_found']} questions found<br>
+                Extracted {partial['pages_done']} pages &bull; {partial['questions_found']} questions found<br>
                 Last page processed: {partial['last_page']}<br>
                 Original range: {partial['original_start']}–{partial['original_end']}
             </div>
@@ -829,14 +1068,14 @@ if "results" in st.session_state:
         for q in questions[:show_count]:
             options_html = ""
             for key, val in q.get("options", {}).items():
-                options_html += f'<div class="q-option">({key}) {val}</div>'
+                options_html += f'<div class="q-option"><span class="q-option-key">{key}</span> <span>{val}</span></div>'
             ref_html = ""
             if "exam_reference" in q:
                 ref_html = f'<div class="q-ref">{q["exam_reference"]}</div>'
 
             st.markdown(f"""
             <div class="q-card">
-                <div class="q-number">Q{q['question_number']} · Page {q['page_number']}</div>
+                <div class="q-number">Q{q['question_number']} &bull; Page {q['page_number']}</div>
                 <div class="q-text">{q['question_text'][:200]}{'...' if len(q['question_text']) > 200 else ''}</div>
                 {options_html}
                 {ref_html}
@@ -877,9 +1116,163 @@ if "results" in st.session_state:
         st.rerun()
 
 elif uploaded_file is None:
+    # ── HOW IT WORKS ──
     st.markdown("""
-    <div style="text-align: center; padding: 3rem 1rem; color: #333333;">
-        <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">📄</div>
-        <div style="font-size: 0.9rem;">Upload a scanned Gujarati PDF to begin</div>
+    <hr class="section-divider">
+    <div class="landing-section">
+        <div class="section-label">How It Works</div>
+        <div class="section-title">From scanned paper to structured data in 4 steps</div>
+        <div class="section-desc">DocuMorph automates the entire extraction pipeline so you don't have to manually type out hundreds of questions from exam booklets.</div>
+
+        <div class="pipeline">
+            <div class="pipe-step">
+                <div class="pipe-icon">
+                    <span class="pipe-num">1</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                </div>
+                <div class="pipe-title">Upload PDF</div>
+                <div class="pipe-desc">Drop your scanned Gujarati MCQ exam paper</div>
+            </div>
+
+            <div class="pipe-arrow">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+
+            <div class="pipe-step">
+                <div class="pipe-icon">
+                    <span class="pipe-num">2</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                </div>
+                <div class="pipe-title">OCR Scan</div>
+                <div class="pipe-desc">Tesseract reads each page with column-aware segmentation</div>
+            </div>
+
+            <div class="pipe-arrow">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+
+            <div class="pipe-step">
+                <div class="pipe-icon">
+                    <span class="pipe-num">3</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                </div>
+                <div class="pipe-title">AI Correction</div>
+                <div class="pipe-desc">Groq LLM fixes garbled Gujarati characters automatically</div>
+            </div>
+
+            <div class="pipe-arrow">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+
+            <div class="pipe-step">
+                <div class="pipe-icon">
+                    <span class="pipe-num">4</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                </div>
+                <div class="pipe-title">JSON Output</div>
+                <div class="pipe-desc">Download structured question data ready for any app</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── FEATURES ──
+    st.markdown("""
+    <hr class="section-divider">
+    <div class="landing-section">
+        <div class="section-label">Features</div>
+        <div class="section-title">Built for real-world exam papers</div>
+        <div class="section-desc">Handles the messy reality of scanned documents — blurry text, dual columns, Indic script ligatures, and API rate limits.</div>
+
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                </div>
+                <div class="feature-title">Gujarati OCR</div>
+                <div class="feature-desc">Tesseract + custom column segmentation tuned for Indic scripts and dual-column exam layouts.</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                </div>
+                <div class="feature-title">AI Text Repair</div>
+                <div class="feature-desc">Groq LLM auto-corrects garbled characters, broken ligatures, and OCR artefacts in Gujarati text.</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                </div>
+                <div class="feature-title">Batch Processing</div>
+                <div class="feature-desc">Process hundreds of pages in configurable 100-page batches with automatic checkpointing.</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+                </div>
+                <div class="feature-title">Resume on Failure</div>
+                <div class="feature-desc">If processing stops mid-way, pick up exactly where you left off without re-doing finished pages.</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <div class="feature-title">Rate-Limit Safe</div>
+                <div class="feature-desc">Multi-key API pool with round-robin rotation, adaptive backoff, and jitter to avoid 429 errors.</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                </div>
+                <div class="feature-title">Dual JSON Output</div>
+                <div class="feature-desc">Download both raw and AI-corrected JSON so you can compare or use whichever suits your needs.</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── OUTPUT SCHEMA PREVIEW ──
+    st.markdown("""
+    <hr class="section-divider">
+    <div class="landing-section">
+        <div class="section-label">Output Format</div>
+        <div class="section-title">Clean, structured JSON — ready for any application</div>
+        <div class="section-desc">Each question is extracted with its number, full text, all options, exam reference, and source page number.</div>
+
+        <div class="output-preview">
+            <div class="output-tab-bar">
+                <div class="output-tab active">output.json</div>
+            </div>
+            <div class="output-body">
+<pre>{
+  <span class="json-key">"total_questions"</span>: <span class="json-num">156</span>,
+  <span class="json-key">"questions"</span>: [
+    {
+      <span class="json-key">"id"</span>: <span class="json-num">1</span>,
+      <span class="json-key">"question_number"</span>: <span class="json-str">"001"</span>,
+      <span class="json-key">"question_text"</span>: <span class="json-str">"ગુજરાતી ભાષાનો પ્રશ્ન..."</span>,
+      <span class="json-key">"options"</span>: {
+        <span class="json-key">"A"</span>: <span class="json-str">"વિકલ્પ એક"</span>,
+        <span class="json-key">"B"</span>: <span class="json-str">"વિકલ્પ બે"</span>,
+        <span class="json-key">"C"</span>: <span class="json-str">"વિકલ્પ ત્રણ"</span>,
+        <span class="json-key">"D"</span>: <span class="json-str">"વિકલ્પ ચાર"</span>
+      },
+      <span class="json-key">"exam_reference"</span>: <span class="json-str">"PI 38/2017-18"</span>,
+      <span class="json-key">"page_number"</span>: <span class="json-num">1</span>
+    }
+  ]
+}</pre>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── FOOTER ──
+    st.markdown("""
+    <div class="site-footer">
+        <div class="footer-text">
+            Built by <a href="https://github.com/vanrajsinh650" target="_blank">vanrajsinh650</a> &bull;
+            <a href="https://github.com/vanrajsinh650/DocuMorph" target="_blank">View on GitHub</a>
+        </div>
     </div>
     """, unsafe_allow_html=True)
