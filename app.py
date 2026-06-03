@@ -1464,14 +1464,14 @@ if uploaded_file is not None:
     total_pages = st.session_state.get("total_pages", 0)
 
     st.markdown(f"""
-    <div class="status-box">
-        <div class="status-value">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #a1a1aa"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-            {uploaded_file.name}
-        </div>
-        <div class="status-meta">{file_size_mb:.1f} MB &bull; {total_pages} pages</div>
+<div class="status-box">
+    <div class="status-value">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #a1a1aa"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+        {uploaded_file.name}
     </div>
-    """, unsafe_allow_html=True)
+    <div class="status-meta">{file_size_mb:.1f} MB &bull; {total_pages} pages</div>
+</div>
+""", unsafe_allow_html=True)
 
     # ── Settings expander ──
     with st.expander("Settings", expanded=True):
@@ -1513,18 +1513,18 @@ if uploaded_file is not None:
 
     if partial and not st.session_state.get("results"):
         st.markdown(f"""
-        <div class="resume-box">
-            <div class="resume-title">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
-                Previous run stopped
-            </div>
-            <div class="resume-info">
-                Extracted {partial['pages_done']} pages &bull; {partial['questions_found']} questions found<br>
-                Last page processed: {partial['last_page']}<br>
-                Original range: {partial['original_start']}–{partial['original_end']}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+<div class="resume-box">
+    <div class="resume-title">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+        Previous run stopped
+    </div>
+    <div class="resume-info">
+        Extracted {partial['pages_done']} pages &bull; {partial['questions_found']} questions found<br>
+        Last page processed: {partial['last_page']}<br>
+        Original range: {partial['original_start']}–{partial['original_end']}
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
         rc1, rc2, rc3 = st.columns(3)
         with rc1:
@@ -1819,13 +1819,13 @@ if "results" in st.session_state:
                     ref_html = f'<div class="q-ref">{q["exam_reference"]}</div>'
 
                 st.markdown(f"""
-                <div class="q-card">
-                    <div class="q-number">Question {q['question_number']} &bull; Page {q['page_number']}</div>
-                    <div class="q-text">{q['question_text']}</div>
-                    {options_html}
-                    {ref_html}
-                </div>
-                """, unsafe_allow_html=True)
+<div class="q-card">
+    <div class="q-number">Question {q['question_number']} &bull; Page {q['page_number']}</div>
+    <div class="q-text">{q['question_text']}</div>
+    {options_html}
+    {ref_html}
+</div>
+""", unsafe_allow_html=True)
 
     with tab2:
         st.markdown("### 📊 Extraction Quality Audit")
@@ -1842,99 +1842,99 @@ if "results" in st.session_state:
         aud_c1, aud_c2 = st.columns(2)
         with aud_c1:
             st.markdown(f"""
-            <div class="audit-card">
-                <div class="audit-card-title">Option Completeness</div>
-                <div class="audit-card-big">{audit_complete} <span class="audit-card-sub">/ {audit_total} questions</span></div>
-                <div class="ev-bar">
-                    <div class="ev-bar-fill green" style="width: {complete_pct}%"></div>
-                </div>
-                <div class="audit-card-desc">{complete_pct:.1f}% of questions have exactly 4 multiple-choice options (A, B, C, D).</div>
-            </div>
-            """, unsafe_allow_html=True)
+<div class="audit-card">
+    <div class="audit-card-title">Option Completeness</div>
+    <div class="audit-card-big">{audit_complete} <span class="audit-card-sub">/ {audit_total} questions</span></div>
+    <div class="ev-bar">
+        <div class="ev-bar-fill green" style="width: {complete_pct}%"></div>
+    </div>
+    <div class="audit-card-desc">{complete_pct:.1f}% of questions have exactly 4 multiple-choice options (A, B, C, D).</div>
+</div>
+""", unsafe_allow_html=True)
         with aud_c2:
             st.markdown(f"""
-            <div class="audit-card">
-                <div class="audit-card-title">Metadata Tagging</div>
-                <div class="audit-card-big">{audit_ref} <span class="audit-card-sub">/ {audit_total} questions</span></div>
-                <div class="ev-bar">
-                    <div class="ev-bar-fill blue" style="width: {ref_pct}%"></div>
-                </div>
-                <div class="audit-card-desc">{ref_pct:.1f}% of questions are tagged with their specific exam code reference.</div>
-            </div>
-            """, unsafe_allow_html=True)
+<div class="audit-card">
+    <div class="audit-card-title">Metadata Tagging</div>
+    <div class="audit-card-big">{audit_ref} <span class="audit-card-sub">/ {audit_total} questions</span></div>
+    <div class="ev-bar">
+        <div class="ev-bar-fill blue" style="width: {ref_pct}%"></div>
+    </div>
+    <div class="audit-card-desc">{ref_pct:.1f}% of questions are tagged with their specific exam code reference.</div>
+</div>
+""", unsafe_allow_html=True)
             
         st.markdown("#### ✅ Verification Checklist")
         
         st.markdown(f"""
-        <div class="verification-checklist">
-            <div class="check-item">
-                <div class="check-icon-wrap green">
-                    <svg class="check-icon-svg" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                </div>
-                <div class="check-content">
-                    <div class="check-title">Standard JSON compliance</div>
-                    <div class="check-desc">The serialized data conforms 100% to the question banking schema.</div>
-                </div>
-            </div>
-            <div class="check-item">
-                <div class="check-icon-wrap green">
-                    <svg class="check-icon-svg" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                </div>
-                <div class="check-content">
-                    <div class="check-title">Gujarati diacritics restoration</div>
-                    <div class="check-desc">LLM post-processing has corrected standard Tesseract OCR artifacts (e.g. spelling mistakes, split ligatures, conjunct characters).</div>
-                </div>
-            </div>
-            <div class="check-item">
-                <div class="check-icon-wrap green">
-                    <svg class="check-icon-svg" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                </div>
-                <div class="check-content">
-                    <div class="check-title">Multi-column layout safety</div>
-                    <div class="check-desc">Column segmentation has properly grouped questions side-by-side without blending option text columns.</div>
-                </div>
-            </div>
+<div class="verification-checklist">
+    <div class="check-item">
+        <div class="check-icon-wrap green">
+            <svg class="check-icon-svg" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
         </div>
-        """, unsafe_allow_html=True)
+        <div class="check-content">
+            <div class="check-title">Standard JSON compliance</div>
+            <div class="check-desc">The serialized data conforms 100% to the question banking schema.</div>
+        </div>
+    </div>
+    <div class="check-item">
+        <div class="check-icon-wrap green">
+            <svg class="check-icon-svg" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </div>
+        <div class="check-content">
+            <div class="check-title">Gujarati diacritics restoration</div>
+            <div class="check-desc">LLM post-processing has corrected standard Tesseract OCR artifacts (e.g. spelling mistakes, split ligatures, conjunct characters).</div>
+        </div>
+    </div>
+    <div class="check-item">
+        <div class="check-icon-wrap green">
+            <svg class="check-icon-svg" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </div>
+        <div class="check-content">
+            <div class="check-title">Multi-column layout safety</div>
+            <div class="check-desc">Column segmentation has properly grouped questions side-by-side without blending option text columns.</div>
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
     with tab3:
         st.markdown("### ✨ DocuMorph Pipeline Insights")
         st.markdown("Learn how DocuMorph extracts and reconstructs questions using hybrid local and cloud technologies.")
         
         st.markdown(f"""
-        <div class="insights-timeline">
-            <div class="insight-node">
-                <div class="insight-node-header">
-                    <div class="insight-icon-container blue">🔍</div>
-                    <div class="insight-node-title">1. Local OCR Text Extraction</div>
-                </div>
-                <div class="insight-node-body">
-                    We use Tesseract OCR running locally with specialized Gujarati trained data. 
-                    Our pipeline applies column-aware preprocessing to divide dual-column pages, preventing side-by-side questions from getting garbled.
-                </div>
-            </div>
-            <div class="insight-node">
-                <div class="insight-node-header">
-                    <div class="insight-icon-container purple">✨</div>
-                    <div class="insight-node-title">2. AI Spelling & Ligature Repair</div>
-                </div>
-                <div class="insight-node-body">
-                    Gujarati is a complex script with conjunct letters and ligatures that standard OCR engines often misread. 
-                    We feed the raw text chunks to a Groq Cloud LLM (Llama 3 70B), which performs high-accuracy spelling correction and grammatically recovers missing characters.
-                </div>
-            </div>
-            <div class="insight-node">
-                <div class="insight-node-header">
-                    <div class="insight-icon-container orange">📦</div>
-                    <div class="insight-node-title">3. Serialization & Clean Packaging</div>
-                </div>
-                <div class="insight-node-body">
-                    Our regex parser scans the corrected text, identifies question boundaries, maps multiple-choice letters (A, B, C, D), 
-                    associates exam references (e.g. PI 24/2017), and serializes them into structured JSON ready for database imports.
-                </div>
-            </div>
+<div class="insights-timeline">
+    <div class="insight-node">
+        <div class="insight-node-header">
+            <div class="insight-icon-container blue">🔍</div>
+            <div class="insight-node-title">1. Local OCR Text Extraction</div>
         </div>
-        """, unsafe_allow_html=True)
+        <div class="insight-node-body">
+            We use Tesseract OCR running locally with specialized Gujarati trained data. 
+            Our pipeline applies column-aware preprocessing to divide dual-column pages, preventing side-by-side questions from getting garbled.
+        </div>
+    </div>
+    <div class="insight-node">
+        <div class="insight-node-header">
+            <div class="insight-icon-container purple">✨</div>
+            <div class="insight-node-title">2. AI Spelling & Ligature Repair</div>
+        </div>
+        <div class="insight-node-body">
+            Gujarati is a complex script with conjunct letters and ligatures that standard OCR engines often misread. 
+            We feed the raw text chunks to a Groq Cloud LLM (Llama 3 70B), which performs high-accuracy spelling correction and grammatically recovers missing characters.
+        </div>
+    </div>
+    <div class="insight-node">
+        <div class="insight-node-header">
+            <div class="insight-icon-container orange">📦</div>
+            <div class="insight-node-title">3. Serialization & Clean Packaging</div>
+        </div>
+        <div class="insight-node-body">
+            Our regex parser scans the corrected text, identifies question boundaries, maps multiple-choice letters (A, B, C, D), 
+            associates exam references (e.g. PI 24/2017), and serializes them into structured JSON ready for database imports.
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
     # Clear results button
     if st.button("Clear Results", key="btn_clear"):
@@ -1954,158 +1954,158 @@ if "results" in st.session_state:
 elif uploaded_file is None:
     # ── HOW IT WORKS ──
     st.markdown("""
-    <hr class="section-divider">
-    <div class="landing-section">
-        <div class="section-label">How It Works</div>
-        <div class="section-title">From scanned paper to structured data in 4 steps</div>
-        <div class="section-desc">DocuMorph automates the entire extraction pipeline so you don't have to manually type out hundreds of questions from exam booklets.</div>
+<hr class="section-divider">
+<div class="landing-section">
+    <div class="section-label">How It Works</div>
+    <div class="section-title">From scanned paper to structured data in 4 steps</div>
+    <div class="section-desc">DocuMorph automates the entire extraction pipeline so you don't have to manually type out hundreds of questions from exam booklets.</div>
 
-        <div class="pipeline">
-            <div class="pipe-step">
-                <div class="pipe-icon">
-                    <span class="pipe-num">1</span>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                </div>
-                <div class="pipe-title">Upload PDF</div>
-                <div class="pipe-desc">Drop your scanned Gujarati MCQ exam paper</div>
+    <div class="pipeline">
+        <div class="pipe-step">
+            <div class="pipe-icon">
+                <span class="pipe-num">1</span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             </div>
+            <div class="pipe-title">Upload PDF</div>
+            <div class="pipe-desc">Drop your scanned Gujarati MCQ exam paper</div>
+        </div>
 
-            <div class="pipe-arrow">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="9 18 15 12 9 6"/></svg>
-            </div>
+        <div class="pipe-arrow">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
 
-            <div class="pipe-step">
-                <div class="pipe-icon">
-                    <span class="pipe-num">2</span>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                </div>
-                <div class="pipe-title">OCR Scan</div>
-                <div class="pipe-desc">Tesseract reads each page with column-aware segmentation</div>
+        <div class="pipe-step">
+            <div class="pipe-icon">
+                <span class="pipe-num">2</span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
             </div>
+            <div class="pipe-title">OCR Scan</div>
+            <div class="pipe-desc">Tesseract reads each page with column-aware segmentation</div>
+        </div>
 
-            <div class="pipe-arrow">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="9 18 15 12 9 6"/></svg>
-            </div>
+        <div class="pipe-arrow">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
 
-            <div class="pipe-step">
-                <div class="pipe-icon">
-                    <span class="pipe-num">3</span>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-                </div>
-                <div class="pipe-title">AI Correction</div>
-                <div class="pipe-desc">Groq LLM fixes garbled Gujarati characters automatically</div>
+        <div class="pipe-step">
+            <div class="pipe-icon">
+                <span class="pipe-num">3</span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
             </div>
+            <div class="pipe-title">AI Correction</div>
+            <div class="pipe-desc">Groq LLM fixes garbled Gujarati characters automatically</div>
+        </div>
 
-            <div class="pipe-arrow">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="9 18 15 12 9 6"/></svg>
-            </div>
+        <div class="pipe-arrow">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
 
-            <div class="pipe-step">
-                <div class="pipe-icon">
-                    <span class="pipe-num">4</span>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                </div>
-                <div class="pipe-title">JSON Output</div>
-                <div class="pipe-desc">Download structured question data ready for any app</div>
+        <div class="pipe-step">
+            <div class="pipe-icon">
+                <span class="pipe-num">4</span>
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
             </div>
+            <div class="pipe-title">JSON Output</div>
+            <div class="pipe-desc">Download structured question data ready for any app</div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+</div>
+""", unsafe_allow_html=True)
 
     # ── FEATURES ──
     st.markdown("""
-    <hr class="section-divider">
-    <div class="landing-section">
-        <div class="section-label">Features</div>
-        <div class="section-title">Built for real-world exam papers</div>
-        <div class="section-desc">Handles the messy reality of scanned documents — blurry text, dual columns, Indic script ligatures, and API rate limits.</div>
+<hr class="section-divider">
+<div class="landing-section">
+    <div class="section-label">Features</div>
+    <div class="section-title">Built for real-world exam papers</div>
+    <div class="section-desc">Handles the messy reality of scanned documents — blurry text, dual columns, Indic script ligatures, and API rate limits.</div>
 
-        <div class="features-grid">
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                </div>
-                <div class="feature-title">Gujarati OCR</div>
-                <div class="feature-desc">Tesseract + custom column segmentation tuned for Indic scripts and dual-column exam layouts.</div>
+    <div class="features-grid">
+        <div class="feature-card">
+            <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-                </div>
-                <div class="feature-title">AI Text Repair</div>
-                <div class="feature-desc">Groq LLM auto-corrects garbled characters, broken ligatures, and OCR artefacts in Gujarati text.</div>
+            <div class="feature-title">Gujarati OCR</div>
+            <div class="feature-desc">Tesseract + custom column segmentation tuned for Indic scripts and dual-column exam layouts.</div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
             </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                </div>
-                <div class="feature-title">Batch Processing</div>
-                <div class="feature-desc">Process hundreds of pages in configurable 100-page batches with automatic checkpointing.</div>
+            <div class="feature-title">AI Text Repair</div>
+            <div class="feature-desc">Groq LLM auto-corrects garbled characters, broken ligatures, and OCR artefacts in Gujarati text.</div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
             </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
-                </div>
-                <div class="feature-title">Resume on Failure</div>
-                <div class="feature-desc">If processing stops mid-way, pick up exactly where you left off without re-doing finished pages.</div>
+            <div class="feature-title">Batch Processing</div>
+            <div class="feature-desc">Process hundreds of pages in configurable 100-page batches with automatic checkpointing.</div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
             </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                </div>
-                <div class="feature-title">Rate-Limit Safe</div>
-                <div class="feature-desc">Multi-key API pool with round-robin rotation, adaptive backoff, and jitter to avoid 429 errors.</div>
+            <div class="feature-title">Resume on Failure</div>
+            <div class="feature-desc">If processing stops mid-way, pick up exactly where you left off without re-doing finished pages.</div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
             </div>
-            <div class="feature-card">
-                <div class="feature-icon">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                </div>
-                <div class="feature-title">Dual JSON Output</div>
-                <div class="feature-desc">Download both raw and AI-corrected JSON so you can compare or use whichever suits your needs.</div>
+            <div class="feature-title">Rate-Limit Safe</div>
+            <div class="feature-desc">Multi-key API pool with round-robin rotation, adaptive backoff, and jitter to avoid 429 errors.</div>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
             </div>
+            <div class="feature-title">Dual JSON Output</div>
+            <div class="feature-desc">Download both raw and AI-corrected JSON so you can compare or use whichever suits your needs.</div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+</div>
+""", unsafe_allow_html=True)
 
     # ── OUTPUT SCHEMA PREVIEW ──
     st.markdown("""
-    <hr class="section-divider">
-    <div class="landing-section">
-        <div class="section-label">Data Capture</div>
-        <div class="section-title">Structured Output Architecture</div>
-        <div class="section-desc">DocuMorph parses scanned text directly into highly-structured database fields, ready for ingestion into any test-prep app or LMS.</div>
+<hr class="section-divider">
+<div class="landing-section">
+    <div class="section-label">Data Capture</div>
+    <div class="section-title">Structured Output Architecture</div>
+    <div class="section-desc">DocuMorph parses scanned text directly into highly-structured database fields, ready for ingestion into any test-prep app or LMS.</div>
 
-        <div class="extract-grid">
-            <div class="extract-card">
-                <div class="extract-card-icon blue">🔢</div>
-                <div class="extract-card-title">Question Metadata</div>
-                <div class="extract-card-desc">Tracks question number and sequential ID to maintain exam booklet order, even across multiple PDFs.</div>
-            </div>
-            <div class="extract-card">
-                <div class="extract-card-icon purple">📝</div>
-                <div class="extract-card-title">Gujarati Question Stem</div>
-                <div class="extract-card-desc">Extracts the full question stem. AI grammar correction repairs character ligatures for searchability.</div>
-            </div>
-            <div class="extract-card">
-                <div class="extract-card-icon orange">🔤</div>
-                <div class="extract-card-title">Multi-Choice Options</div>
-                <div class="extract-card-desc">Maps options into clean key-value structures (A, B, C, D), stripping out formatting clutter.</div>
-            </div>
-            <div class="extract-card">
-                <div class="extract-card-icon green">🔖</div>
-                <div class="extract-card-title">Exam Reference Tagging</div>
-                <div class="extract-card-desc">Locates and attaches reference codes (e.g. PI 38/2017-18) to enable sorting by source exams.</div>
-            </div>
+    <div class="extract-grid">
+        <div class="extract-card">
+            <div class="extract-card-icon blue">🔢</div>
+            <div class="extract-card-title">Question Metadata</div>
+            <div class="extract-card-desc">Tracks question number and sequential ID to maintain exam booklet order, even across multiple PDFs.</div>
+        </div>
+        <div class="extract-card">
+            <div class="extract-card-icon purple">📝</div>
+            <div class="extract-card-title">Gujarati Question Stem</div>
+            <div class="extract-card-desc">Extracts the full question stem. AI grammar correction repairs character ligatures for searchability.</div>
+        </div>
+        <div class="extract-card">
+            <div class="extract-card-icon orange">🔤</div>
+            <div class="extract-card-title">Multi-Choice Options</div>
+            <div class="extract-card-desc">Maps options into clean key-value structures (A, B, C, D), stripping out formatting clutter.</div>
+        </div>
+        <div class="extract-card">
+            <div class="extract-card-icon green">🔖</div>
+            <div class="extract-card-title">Exam Reference Tagging</div>
+            <div class="extract-card-desc">Locates and attaches reference codes (e.g. PI 38/2017-18) to enable sorting by source exams.</div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+</div>
+""", unsafe_allow_html=True)
 
     # ── FOOTER ──
     st.markdown("""
-    <div class="site-footer">
-        <div class="footer-text">
-            Built by <a href="https://github.com/vanrajsinh650" target="_blank">vanrajsinh650</a> &bull;
-            <a href="https://github.com/vanrajsinh650/DocuMorph" target="_blank">View on GitHub</a>
-        </div>
+<div class="site-footer">
+    <div class="footer-text">
+        Built by <a href="https://github.com/vanrajsinh650" target="_blank">vanrajsinh650</a> &bull;
+        <a href="https://github.com/vanrajsinh650/DocuMorph" target="_blank">View on GitHub</a>
     </div>
-    """, unsafe_allow_html=True)
+</div>
+""", unsafe_allow_html=True)
